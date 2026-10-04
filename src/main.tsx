@@ -14,32 +14,37 @@ import {
   type Run,
 } from '../shared/schema';
 import './style.css';
+import { ResultView } from './ResultView';
+import { EvaluationWorkspace } from './Evaluation';
+import type { LocalUser, RunSummary, Labeling } from '../shared/evaluation';
 type Experiment = {
   id: string;
   title: string;
   query: Query;
   createdAt: string;
+  createdByUserId?: string;
 };
-async function api<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(
-    `/api/${path}`,
-    body
-      ? {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      : undefined,
-  );
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '処理に失敗しました。');
-  return data;
-}
+import { api } from './api';
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 const DraftValidity = createContext<(label: string, invalid: boolean) => void>(
   () => {},
 );
-function App() {
+function App({
+  user,
+  users,
+  beforeSwitch,
+}: {
+  user: LocalUser;
+  users: LocalUser[];
+  beforeSwitch: React.MutableRefObject<null | (() => Promise<void>)>;
+}) {
+  const request = <T,>(path: string, body?: unknown, method = 'POST') =>
+    api<T>(path, body, method, user.id);
+  const [workspace, setWorkspace] = useState<'playground' | 'evaluation'>(
+    'playground',
+  );
+  const [evaluationId, setEvaluationId] = useState<string | null>(null);
+  const [blind, setBlind] = useState(true);
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -59,7 +64,7 @@ function App() {
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
     [configured, setConfigured] = useState<boolean | null>(null);
-  const [runs, setRuns] = useState<Run[]>([]),
+  const [runs, setRuns] = useState<RunSummary[]>([]),
     [experiments, setExperiments] = useState<Experiment[]>([]),
     [result, setResult] = useState<Run | null>(null);
   const lock = useRef(false);
@@ -74,9 +79,9 @@ function App() {
   const jsonValid = mode === 'form' || Boolean(parseJson());
   async function refresh() {
     const [r, e, c] = await Promise.all([
-      api<Run[]>('runs'),
-      api<Experiment[]>('experiments'),
-      api<{ configured: boolean }>('config'),
+      request<RunSummary[]>('runs/summaries'),
+      request<Experiment[]>('experiments'),
+      request<{ configured: boolean }>('config'),
     ]);
     setRuns(r);
     setExperiments(e);
@@ -89,6 +94,16 @@ function App() {
     setQuery(next);
     setJson(pretty(next));
     setNotice('');
+  }
+  async function navigate(fn: () => void) {
+    try {
+      await beforeSwitch.current?.();
+      fn();
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : '下書きを保存できませんでした。',
+      );
+    }
   }
   function load(q: Query, t: string, r: Run | null = null) {
     update(q);
@@ -109,9 +124,18 @@ function App() {
     setError('');
     setNotice('');
     try {
-      const saved = await api<Run | Experiment>(kind, { title, query: q });
-      if (kind === 'runs') setResult(saved as Run);
-      else setNotice('実験を保存しました。');
+      const saved = await request<Run | Experiment | Labeling>(kind, {
+        title,
+        query: q,
+        blind: kind === 'runs' ? blind : undefined,
+      });
+      if (kind === 'runs') {
+        if (blind) {
+          setResult(null);
+          setEvaluationId((saved as Labeling).run.id);
+          setWorkspace('evaluation');
+        } else setResult(saved as Run);
+      } else setNotice('実験を保存しました。');
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : '処理に失敗しました。');
@@ -147,10 +171,19 @@ function App() {
             <button
               className="history"
               key={e.id}
-              onClick={() => load(e.query, e.title)}
+              onClick={() => {
+                void navigate(() => {
+                  setWorkspace('playground');
+                  load(e.query, e.title);
+                });
+              }}
             >
               {e.title}
-              <small>{new Date(e.createdAt).toLocaleString('ja-JP')}</small>
+              <small>
+                {users.find((u) => u.id === e.createdByUserId)?.name ??
+                  '作成者不明'}{' '}
+                · {new Date(e.createdAt).toLocaleString('ja-JP')}
+              </small>
             </button>
           ))}
           <h2>
@@ -163,11 +196,18 @@ function App() {
             <button
               className="history"
               key={r.id}
-              onClick={() => load(r.query, r.title, r)}
+              onClick={() => {
+                void navigate(() => {
+                  setResult(null);
+                  setEvaluationId(r.id);
+                  setWorkspace('evaluation');
+                });
+              }}
             >
               {r.title}
               <small>
-                {r.response.model} · {r.elapsedMs} ms
+                {r.finalized ? 'ラベル確定済み' : 'ラベル未確定'} ·{' '}
+                {r.exposure === 'blind' ? '回答非公開' : '閲覧済み／不明'}
               </small>
             </button>
           ))}
@@ -178,391 +218,380 @@ function App() {
           </footer>
         </aside>
         <main>
-          <header>
-            <div>
-              <div className="eyebrow">PLAYGROUND / JEV</div>
-              <h1>文章は作りません。判断をします。</h1>
-              <p>入力と質問を組み立て、モデルの判断を確率で確かめる。</p>
-            </div>
-            <div className={`status ${configured ? 'ready' : ''}`}>
-              ●{' '}
-              {configured === null
-                ? '接続確認中'
-                : configured
-                  ? 'API KEY READY'
-                  : 'API KEY 未設定'}
-            </div>
-          </header>
-          {configured === false && (
-            <div className="setup">
-              開始するには <code>.env</code> に <code>TYPESAFE_API_KEY</code>{' '}
-              を設定し、サーバーを再起動してください。
-            </div>
-          )}
-          <div className="toolbar">
-            <label className="title-label">
-              実験名
-              <input
-                aria-label="実験名"
-                maxLength={120}
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </label>
+          <div className="workspace-tabs">
             <button
-              disabled={
-                fieldError ||
-                busy ||
-                !jsonValid ||
-                !valid.success ||
-                !title.trim()
-              }
-              onClick={() => submit('experiments')}
+              aria-pressed={workspace === 'playground'}
+              onClick={() => void navigate(() => setWorkspace('playground'))}
             >
-              実験を保存
+              Playground
             </button>
             <button
-              className="primary"
-              disabled={
-                fieldError ||
-                busy ||
-                !configured ||
-                !jsonValid ||
-                !valid.success ||
-                !title.trim()
-              }
-              onClick={() => submit('runs')}
+              aria-pressed={workspace === 'evaluation'}
+              onClick={() => {
+                setResult(null);
+                setWorkspace('evaluation');
+              }}
             >
-              {busy ? '処理中…' : '判断を実行 ↗'}
+              Evaluation
             </button>
           </div>
-          {error && (
-            <div role="alert" className="alert">
-              {error}
-            </div>
-          )}
-          {notice && (
-            <div role="status" className="setup">
-              {notice}
-            </div>
-          )}
-          <div className="columns">
-            <section className="panel editor">
-              <div className="panel-heading">
-                <h2>
-                  01 <span>クエリを組み立てる</span>
-                </h2>
-                <div className="tabs">
-                  <button
-                    aria-pressed={mode === 'form'}
-                    onClick={() => {
-                      const parsed = parseJson();
-                      if (mode === 'json' && !parsed) {
-                        setError(
-                          'JSON を修正してからフォームへ切り替えてください。',
-                        );
-                        return;
-                      }
-                      if (parsed && mode === 'json') update(parsed);
-                      setMode('form');
-                    }}
-                  >
-                    フォーム
-                  </button>
-                  <button
-                    aria-pressed={mode === 'json'}
-                    onClick={() => {
-                      setJson(pretty(query));
-                      if (fieldError) {
-                        setError(
-                          '無効な入力を修正してから切り替えてください。',
-                        );
-                        return;
-                      }
-                      setMode('json');
-                    }}
-                  >
-                    JSON
-                  </button>
+          {workspace === 'evaluation' ? (
+            <EvaluationWorkspace
+              key={evaluationId ?? 'none'}
+              runId={evaluationId}
+              user={user}
+              users={users}
+              beforeSwitch={beforeSwitch}
+              onCopy={(q, t) =>
+                void navigate(() => {
+                  load(q, t);
+                  setWorkspace('playground');
+                })
+              }
+              onChanged={refresh}
+            />
+          ) : (
+            <>
+              <header>
+                <div>
+                  <div className="eyebrow">PLAYGROUND / JEV</div>
+                  <h1>文章は作りません。判断をします。</h1>
+                  <p>入力と質問を組み立て、モデルの判断を確率で確かめる。</p>
                 </div>
-              </div>
-              <label>
-                モデル
+                <div className={`status ${configured ? 'ready' : ''}`}>
+                  ●{' '}
+                  {configured === null
+                    ? '接続確認中'
+                    : configured
+                      ? 'API KEY READY'
+                      : 'API KEY 未設定'}
+                </div>
+              </header>
+              {configured === false && (
+                <div className="setup">
+                  開始するには <code>.env</code> に{' '}
+                  <code>TYPESAFE_API_KEY</code>{' '}
+                  を設定し、サーバーを再起動してください。
+                </div>
+              )}
+              <label className="blind-toggle">
                 <input
-                  aria-label="モデル"
-                  value={query.model}
-                  onChange={(e) => update({ ...query, model: e.target.value })}
-                />
+                  type="checkbox"
+                  checked={blind}
+                  onChange={(e) => {
+                    setBlind(e.target.checked);
+                    setResult(null);
+                  }}
+                />{' '}
+                ブラインド実行（ラベル確定まで回答を隠す）
               </label>
-              {mode === 'json' ? (
-                <>
+              <div className="toolbar">
+                <label className="title-label">
+                  実験名
+                  <input
+                    aria-label="実験名"
+                    maxLength={120}
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={
+                    fieldError ||
+                    busy ||
+                    !jsonValid ||
+                    !valid.success ||
+                    !title.trim()
+                  }
+                  onClick={() => submit('experiments')}
+                >
+                  実験を保存
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    fieldError ||
+                    busy ||
+                    !configured ||
+                    !jsonValid ||
+                    !valid.success ||
+                    !title.trim()
+                  }
+                  onClick={() => submit('runs')}
+                >
+                  {busy ? '処理中…' : '判断を実行 ↗'}
+                </button>
+              </div>
+              {error && (
+                <div role="alert" className="alert">
+                  {error}
+                </div>
+              )}
+              {notice && (
+                <div role="status" className="setup">
+                  {notice}
+                </div>
+              )}
+              <div className="columns">
+                <section className="panel editor">
+                  <div className="panel-heading">
+                    <h2>
+                      01 <span>クエリを組み立てる</span>
+                    </h2>
+                    <div className="tabs">
+                      <button
+                        aria-pressed={mode === 'form'}
+                        onClick={() => {
+                          const parsed = parseJson();
+                          if (mode === 'json' && !parsed) {
+                            setError(
+                              'JSON を修正してからフォームへ切り替えてください。',
+                            );
+                            return;
+                          }
+                          if (parsed && mode === 'json') update(parsed);
+                          setMode('form');
+                        }}
+                      >
+                        フォーム
+                      </button>
+                      <button
+                        aria-pressed={mode === 'json'}
+                        onClick={() => {
+                          setJson(pretty(query));
+                          if (fieldError) {
+                            setError(
+                              '無効な入力を修正してから切り替えてください。',
+                            );
+                            return;
+                          }
+                          setMode('json');
+                        }}
+                      >
+                        JSON
+                      </button>
+                    </div>
+                  </div>
                   <label>
-                    送信 JSON
-                    <textarea
-                      className="code"
-                      aria-label="送信 JSON"
-                      rows={24}
-                      value={json}
-                      onChange={(e) => {
-                        setJson(e.target.value);
-                        try {
-                          const q = requestSchema.parse(
-                            JSON.parse(e.target.value),
-                          );
-                          setQuery(q);
-                        } catch {
-                          /* preserve invalid draft */
-                        }
-                      }}
+                    モデル
+                    <input
+                      aria-label="モデル"
+                      value={query.model}
+                      onChange={(e) =>
+                        update({ ...query, model: e.target.value })
+                      }
                     />
                   </label>
-                  {!jsonValid && (
-                    <p role="alert" className="validation">
-                      JSON 構文またはクエリの形式が無効です。送信できません。
-                    </p>
-                  )}
-                </>
-              ) : (
-                <>
-                  <StateEditor
-                    value={query.state}
-                    onChange={(state) => update({ ...query, state })}
-                  />
-                  <div className="section-title">
-                    <h3>
-                      質問 <span>{Object.keys(query.questions).length}</span>
-                    </h3>
-                    <button onClick={addQuestion}>＋ 質問を追加</button>
-                  </div>
-                  {Object.entries(query.questions).map(([id, q], i) => (
-                    <div className="question" key={id}>
-                      <div className="question-header">
-                        <span className="question-number">
-                          {String(i + 1).padStart(2, '0')}
-                        </span>
-                        <input
-                          aria-label={`質問ID ${i + 1}`}
-                          defaultValue={id}
-                          onBlur={(e) => {
-                            const next = e.target.value.trim();
-                            if (next === id) return;
-                            if (!next || Object.hasOwn(query.questions, next)) {
-                              e.target.value = id;
-                              setError(
-                                '質問IDは空にせず、重複しない名前にしてください。',
-                              );
-                              return;
-                            }
-                            update({
-                              ...query,
-                              questions: Object.fromEntries(
-                                Object.entries(query.questions).map(
-                                  ([key, v]) => [key === id ? next : key, v],
-                                ),
-                              ),
-                            });
-                          }}
-                        />
-                        <select
-                          aria-label={`質問タイプ ${i + 1}`}
-                          value={q.type}
+                  {mode === 'json' ? (
+                    <>
+                      <label>
+                        送信 JSON
+                        <textarea
+                          className="code"
+                          aria-label="送信 JSON"
+                          rows={24}
+                          value={json}
                           onChange={(e) => {
-                            const type = e.target.value as Question['type'];
-                            changeQuestion(
-                              id,
-                              type === 'noul'
-                                ? { type, instructions: q.instructions }
-                                : type === 'choice'
-                                  ? {
-                                      type,
-                                      instructions: q.instructions,
-                                      criteria: {
-                                        option_a: '選択肢 A',
-                                        option_b: '選択肢 B',
-                                      },
-                                    }
-                                  : {
-                                      type,
-                                      instructions: q.instructions,
-                                      criteria: ['低い', '高い'],
-                                    },
-                            );
-                          }}
-                        >
-                          <option value="noul">Noul · Yes / No</option>
-                          <option value="choice">Choice · 選択</option>
-                          <option value="score">Score · 評価</option>
-                        </select>
-                        <button
-                          aria-label={`質問を削除 ${id}`}
-                          onClick={() =>
-                            update({
-                              ...query,
-                              questions: Object.fromEntries(
-                                Object.entries(query.questions).filter(
-                                  ([k]) => k !== id,
-                                ),
-                              ),
-                            })
-                          }
-                        >
-                          ×
-                        </button>
-                      </div>
-                      <ContentEditor
-                        label={`質問文 ${id}`}
-                        value={q.instructions}
-                        onChange={(instructions) =>
-                          changeQuestion(id, { ...q, instructions })
-                        }
-                      />
-                      {q.type !== 'noul' && (
-                        <CriteriaEditor
-                          kind={q.type}
-                          label={`評価基準 ${id}`}
-                          value={q.criteria}
-                          onChange={(criteria) => {
-                            const parsed =
-                              requestSchema.shape.questions.safeParse({
-                                [id]: { ...q, criteria },
-                              });
-                            if (!parsed.success) return false;
-                            changeQuestion(id, parsed.data[id]);
-                            return true;
+                            setJson(e.target.value);
+                            try {
+                              const q = requestSchema.parse(
+                                JSON.parse(e.target.value),
+                              );
+                              setQuery(q);
+                            } catch {
+                              /* preserve invalid draft */
+                            }
                           }}
                         />
-                      )}
-                      {q.type === 'noul' && (
-                        <details>
-                          <summary>Yes / No の基準（任意）</summary>
-                          <CriteriaEditor
-                            kind="noul"
-                            label={`評価基準 ${id}`}
-                            value={q.criteria ?? { true: '', false: '' }}
-                            onChange={(criteria) => {
-                              const parsed =
-                                requestSchema.shape.questions.safeParse({
-                                  [id]: { ...q, criteria },
-                                });
-                              if (!parsed.success) return false;
-                              changeQuestion(id, parsed.data[id]);
-                              return true;
-                            }}
-                          />
-                        </details>
-                      )}
-                    </div>
-                  ))}
-                  {!valid.success && (
-                    <p className="validation">
-                      {valid.error.issues.map((i) => i.message).join(' / ')}
-                    </p>
-                  )}
-                </>
-              )}
-            </section>
-            <section className="panel results">
-              <div className="panel-heading">
-                <h2>
-                  02 <span>判断を読み解く</span>
-                </h2>
-                <span className="eyebrow">RESPONSE</span>
-              </div>
-              {!result ? (
-                <div className="empty">
-                  <div className="empty-icon">⌘</div>
-                  <h3>判断が、ここに届きます。</h3>
-                  <p>
-                    質問を用意して「判断を実行」を押すと、
-                    <br />
-                    回答と選択肢ごとの確率を確認できます。
-                  </p>
-                  <div className="legend">
-                    <span>Noul</span>
-                    <span>Choice</span>
-                    <span>Score</span>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="metrics">
-                    <div>
-                      <small>MODEL</small>
-                      <strong>{result.response.model}</strong>
-                    </div>
-                    <div>
-                      <small>LATENCY</small>
-                      <strong>
-                        {result.elapsedMs.toLocaleString()} <small>ms</small>
-                      </strong>
-                    </div>
-                    <div>
-                      <small>TOKENS · IN / OUT</small>
-                      <strong>
-                        {result.response.usage.input_tokens ?? '—'} /{' '}
-                        {result.response.usage.output_tokens ?? '—'}
-                      </strong>
-                    </div>
-                  </div>
-                  <p className="result-caption">
-                    実行時の結果 · {result.title} ·{' '}
-                    {new Date(result.createdAt).toLocaleString('ja-JP')}
-                  </p>
-                  {Object.entries(result.response.answers).map(([id, a]) => (
-                    <article className="answer" key={id}>
-                      <div className="answer-heading">
-                        <h3>{id}</h3>
-                        <span className="badge">{a.type}</span>
-                      </div>
-                      <div className="verdict">
-                        {a.type === 'noul'
-                          ? `P(Yes) ${(a.noul * 100).toFixed(1)}%`
-                          : a.type === 'choice'
-                            ? a.choice
-                            : a.score.toFixed(3)}
-                      </div>
-                      {a.type !== 'noul' && (
-                        <p className="muted">
-                          Confidence {a.confidence.toFixed(3)} ·
-                          分布の集中度（正答率ではありません）
+                      </label>
+                      {!jsonValid && (
+                        <p role="alert" className="validation">
+                          JSON
+                          構文またはクエリの形式が無効です。送信できません。
                         </p>
                       )}
-                      {Object.entries(
-                        a.type === 'noul'
-                          ? { Yes: a.noul, No: 1 - a.noul }
-                          : a.probabilities,
-                      ).map(([key, p]) => (
-                        <div className="probability" key={key}>
-                          <div>
-                            <span>
-                              {a.type === 'score'
-                                ? `${key} · ${a.legend[key]}`
-                                : key}
+                    </>
+                  ) : (
+                    <>
+                      <StateEditor
+                        value={query.state}
+                        onChange={(state) => update({ ...query, state })}
+                      />
+                      <div className="section-title">
+                        <h3>
+                          質問{' '}
+                          <span>{Object.keys(query.questions).length}</span>
+                        </h3>
+                        <button onClick={addQuestion}>＋ 質問を追加</button>
+                      </div>
+                      {Object.entries(query.questions).map(([id, q], i) => (
+                        <div className="question" key={id}>
+                          <div className="question-header">
+                            <span className="question-number">
+                              {String(i + 1).padStart(2, '0')}
                             </span>
-                            <strong>{(p * 100).toFixed(1)}%</strong>
+                            <input
+                              aria-label={`質問ID ${i + 1}`}
+                              defaultValue={id}
+                              onBlur={(e) => {
+                                const next = e.target.value.trim();
+                                if (next === id) return;
+                                if (
+                                  !next ||
+                                  Object.hasOwn(query.questions, next)
+                                ) {
+                                  e.target.value = id;
+                                  setError(
+                                    '質問IDは空にせず、重複しない名前にしてください。',
+                                  );
+                                  return;
+                                }
+                                update({
+                                  ...query,
+                                  questions: Object.fromEntries(
+                                    Object.entries(query.questions).map(
+                                      ([key, v]) => [
+                                        key === id ? next : key,
+                                        v,
+                                      ],
+                                    ),
+                                  ),
+                                });
+                              }}
+                            />
+                            <select
+                              aria-label={`質問タイプ ${i + 1}`}
+                              value={q.type}
+                              onChange={(e) => {
+                                const type = e.target.value as Question['type'];
+                                changeQuestion(
+                                  id,
+                                  type === 'noul'
+                                    ? { type, instructions: q.instructions }
+                                    : type === 'choice'
+                                      ? {
+                                          type,
+                                          instructions: q.instructions,
+                                          criteria: {
+                                            option_a: '選択肢 A',
+                                            option_b: '選択肢 B',
+                                          },
+                                        }
+                                      : {
+                                          type,
+                                          instructions: q.instructions,
+                                          criteria: ['低い', '高い'],
+                                        },
+                                );
+                              }}
+                            >
+                              <option value="noul">Noul · Yes / No</option>
+                              <option value="choice">Choice · 選択</option>
+                              <option value="score">Score · 評価</option>
+                            </select>
+                            <button
+                              aria-label={`質問を削除 ${id}`}
+                              onClick={() =>
+                                update({
+                                  ...query,
+                                  questions: Object.fromEntries(
+                                    Object.entries(query.questions).filter(
+                                      ([k]) => k !== id,
+                                    ),
+                                  ),
+                                })
+                              }
+                            >
+                              ×
+                            </button>
                           </div>
-                          <div className="track">
-                            <div style={{ width: `${p * 100}%` }} />
-                          </div>
+                          <ContentEditor
+                            label={`質問文 ${id}`}
+                            value={q.instructions}
+                            onChange={(instructions) =>
+                              changeQuestion(id, { ...q, instructions })
+                            }
+                          />
+                          {q.type !== 'noul' && (
+                            <CriteriaEditor
+                              kind={q.type}
+                              label={`評価基準 ${id}`}
+                              value={q.criteria}
+                              onChange={(criteria) => {
+                                const parsed =
+                                  requestSchema.shape.questions.safeParse({
+                                    [id]: { ...q, criteria },
+                                  });
+                                if (!parsed.success) return false;
+                                changeQuestion(id, parsed.data[id]);
+                                return true;
+                              }}
+                            />
+                          )}
+                          {q.type === 'noul' && (
+                            <details>
+                              <summary>Yes / No の基準（任意）</summary>
+                              <CriteriaEditor
+                                kind="noul"
+                                label={`評価基準 ${id}`}
+                                value={q.criteria ?? { true: '', false: '' }}
+                                onChange={(criteria) => {
+                                  const parsed =
+                                    requestSchema.shape.questions.safeParse({
+                                      [id]: { ...q, criteria },
+                                    });
+                                  if (!parsed.success) return false;
+                                  changeQuestion(id, parsed.data[id]);
+                                  return true;
+                                }}
+                              />
+                            </details>
+                          )}
                         </div>
                       ))}
-                    </article>
-                  ))}
-                  <details className="raw">
-                    <summary>生のレスポンス</summary>
-                    <pre>{pretty(result.response)}</pre>
-                  </details>
-                  <details className="raw">
-                    <summary>実行時のクエリ</summary>
-                    <pre>{pretty(result.query)}</pre>
-                  </details>
-                </>
-              )}
-            </section>
-          </div>
-          <div className="bottom-note">
-            Jev API · 自動再試行なし · 入力と実行結果はこの端末に保存されます
-          </div>
+                      {!valid.success && (
+                        <p className="validation">
+                          {valid.error.issues.map((i) => i.message).join(' / ')}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </section>
+                <section className="panel results">
+                  <div className="panel-heading">
+                    <h2>
+                      02 <span>判断を読み解く</span>
+                    </h2>
+                    <span className="eyebrow">RESPONSE</span>
+                  </div>
+                  {!result ? (
+                    <div className="empty">
+                      <div className="empty-icon">⌘</div>
+                      <h3>判断が、ここに届きます。</h3>
+                      <p>
+                        質問を用意して「判断を実行」を押すと、
+                        <br />
+                        回答と選択肢ごとの確率を確認できます。
+                      </p>
+                      <div className="legend">
+                        <span>Noul</span>
+                        <span>Choice</span>
+                        <span>Score</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <ResultView result={result} />
+                    </>
+                  )}
+                </section>
+              </div>
+              <div className="bottom-note">
+                Jev API · 自動再試行なし ·
+                入力と実行結果はこの端末に保存されます
+              </div>
+            </>
+          )}
         </main>
       </div>
     </DraftValidity.Provider>
@@ -837,4 +866,122 @@ function StateEditor({
     </div>
   );
 }
-createRoot(document.getElementById('root')!).render(<App />);
+function LocalWorkspace() {
+  const [users, setUsers] = useState<LocalUser[]>([]),
+    [userId, setUserId] = useState(''),
+    [error, setError] = useState(''),
+    [switching, setSwitching] = useState(false),
+    [name, setName] = useState('');
+  const beforeSwitch = useRef<null | (() => Promise<void>)>(null);
+  useEffect(() => {
+    api<{ users: LocalUser[]; defaultUserId: string }>('local-users')
+      .then((v) => {
+        setUsers(v.users);
+        const saved = localStorage.getItem('localUserId');
+        const chosen =
+          v.users.find((u) => u.id === saved && u.kind === 'local')?.id ??
+          v.defaultUserId;
+        localStorage.setItem('localUserId', chosen);
+        setUserId(chosen);
+      })
+      .catch((e) => setError(e.message));
+  }, []);
+  async function change(id: string) {
+    if (id === userId) return;
+    setSwitching(true);
+    setError('');
+    try {
+      await beforeSwitch.current?.();
+      beforeSwitch.current = null;
+      localStorage.setItem('localUserId', id);
+      setUserId(id);
+    } catch (e) {
+      localStorage.setItem('localUserId', userId);
+      setError(e instanceof Error ? e.message : '切り替えに失敗しました。');
+    } finally {
+      setSwitching(false);
+    }
+  }
+  useEffect(() => {
+    const listen = (e: StorageEvent) => {
+      if (e.key === 'localUserId' && e.newValue) {
+        const target = e.newValue;
+        void api<{ users: LocalUser[] }>(
+          'local-users',
+          undefined,
+          'GET',
+          userId,
+        )
+          .then((v) => {
+            setUsers(v.users);
+            if (v.users.some((u) => u.id === target && u.kind === 'local'))
+              return change(target);
+          })
+          .catch((e) => setError(e.message));
+      }
+    };
+    window.addEventListener('storage', listen);
+    return () => window.removeEventListener('storage', listen);
+  }, [userId, users]);
+  async function add() {
+    try {
+      const u = await api<LocalUser>('local-users', { name });
+      setUsers((prev) => [...prev, u]);
+      setName('');
+      await change(u.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '追加に失敗しました。');
+    }
+  }
+  const user = users.find((u) => u.id === userId);
+  return (
+    <>
+      <div className="identity-bar">
+        <label>
+          ローカル利用者{' '}
+          <select
+            aria-label="ローカル利用者"
+            value={userId}
+            disabled={switching}
+            onChange={(e) => void change(e.target.value)}
+          >
+            {users
+              .filter((u) => u.kind === 'local')
+              .map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} · {u.id.slice(0, 6)}
+                </option>
+              ))}
+          </select>
+        </label>
+        <input
+          aria-label="新しい利用者名"
+          placeholder="新しい利用者名"
+          value={name}
+          maxLength={80}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <button disabled={!name.trim() || switching} onClick={() => void add()}>
+          利用者を追加
+        </button>
+        <small>記録用の識別です。認証・アクセス制御はありません。</small>
+      </div>
+      {error && (
+        <div role="alert" className="alert">
+          {error}
+        </div>
+      )}
+      {user ? (
+        <App
+          key={user.id}
+          user={user}
+          users={users}
+          beforeSwitch={beforeSwitch}
+        />
+      ) : (
+        <p>利用者を読み込んでいます…</p>
+      )}
+    </>
+  );
+}
+createRoot(document.getElementById('root')!).render(<LocalWorkspace />);

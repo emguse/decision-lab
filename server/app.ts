@@ -3,7 +3,8 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { requestSchema } from '../shared/schema.js';
 import { ProviderError, type DecisionProvider } from './provider.js';
-import type { Store } from './store.js';
+import { SCHEMA_VERSION, StoreError, type Store } from './store.js';
+import { draftSchema } from '../shared/evaluation.js';
 export function createApp(
   store: Store,
   provider: DecisionProvider,
@@ -30,6 +31,11 @@ export function createApp(
     }),
   );
   app.onError((error, c) => {
+    if (error instanceof StoreError)
+      return c.json(
+        { error: error.message },
+        error.status as 400 | 403 | 404 | 409,
+      );
     if (error instanceof ProviderError)
       return c.json(
         { error: error.message, code: error.code },
@@ -39,19 +45,85 @@ export function createApp(
       return c.json({ error: '入力形式を確認してください。' }, 400);
     return c.json({ error: '保存またはサーバー処理に失敗しました。' }, 500);
   });
-  app.get('/api/config', (c) => c.json({ configured, provider: 'jev' }));
-  app.get('/api/runs', (c) => c.json(store.listRuns()));
+  app.get('/api/config', (c) =>
+    c.json({
+      configured,
+      provider: 'jev',
+      schemaVersion: SCHEMA_VERSION,
+      recordFormatVersion: 1,
+    }),
+  );
+  const actor = (c: { req: { header(name: string): string | undefined } }) =>
+    store.actor(c.req.header('X-Local-User'));
+  app.get('/api/local-users', (c) =>
+    c.json({ users: store.listUsers(), defaultUserId: store.actor() }),
+  );
+  app.post('/api/local-users', async (c) => {
+    const v = z
+      .object({ name: z.string().trim().min(1).max(80) })
+      .parse(await c.req.json());
+    return c.json(store.addUser(v.name), 201);
+  });
+  app.get('/api/runs', (c) => c.json(store.listRuns(actor(c))));
+  app.get('/api/runs/summaries', (c) => c.json(store.listSummaries(actor(c))));
+  app.get('/api/runs/:id/labeling', (c) =>
+    c.json(store.labeling(c.req.param('id'), actor(c))),
+  );
+  app.put('/api/runs/:id/labels', async (c) =>
+    c.json(
+      store.saveDraft(
+        c.req.param('id'),
+        actor(c),
+        draftSchema.parse(await c.req.json()),
+      ),
+    ),
+  );
+  app.post('/api/runs/:id/finalize', async (c) =>
+    c.json(
+      store.finalize(
+        c.req.param('id'),
+        actor(c),
+        draftSchema.parse(await c.req.json()),
+      ),
+    ),
+  );
+  app.post('/api/runs/:id/reveal', (c) =>
+    c.json(store.reveal(c.req.param('id'), actor(c))),
+  );
+  app.get('/api/runs/:id/evaluation', (c) =>
+    c.json(store.evaluation(c.req.param('id'), actor(c))),
+  );
+  app.post('/api/runs/:id/assignments', async (c) => {
+    actor(c);
+    const v = z.object({ userId: z.string() }).parse(await c.req.json());
+    store.assign(c.req.param('id'), v.userId);
+    return c.json(store.assignments(c.req.param('id')));
+  });
+  app.get('/api/runs/:id/comparison', (c) =>
+    c.json(store.comparison(c.req.param('id'), actor(c))),
+  );
+  app.post('/api/runs/:id/adopt', async (c) => {
+    const v = draftSchema
+      .extend({ sourceRevisionIds: z.array(z.string()) })
+      .parse(await c.req.json());
+    return c.json(
+      store.adopt(c.req.param('id'), actor(c), v, v.sourceRevisionIds),
+      201,
+    );
+  });
   app.get('/api/experiments', (c) => c.json(store.listExperiments()));
   const input = z.object({
     title: z.string().trim().min(1).max(120),
     query: requestSchema,
+    blind: z.boolean().optional(),
   });
   app.post('/api/experiments', async (c) => {
     const v = input.parse(await c.req.json());
-    return c.json(store.saveExperiment(v.title, v.query), 201);
+    return c.json(store.saveExperiment(v.title, v.query, actor(c)), 201);
   });
   let running = false;
   app.post('/api/runs', async (c) => {
+    const userId = actor(c);
     const v = input.parse(await c.req.json());
     if (running)
       return c.json(
@@ -62,13 +134,23 @@ export function createApp(
     try {
       const start = performance.now();
       const response = await provider.evaluate(v.query);
-      const run = store.saveRun({
-        ...v,
-        response,
-        elapsedMs: Math.round(performance.now() - start),
-        createdAt: new Date().toISOString(),
-      });
-      return c.json(run, 201);
+      const run = store.saveRun(
+        {
+          title: v.title,
+          query: v.query,
+          response,
+          elapsedMs: Math.round(performance.now() - start),
+          createdAt: new Date().toISOString(),
+        },
+        userId,
+        v.blind ?? false,
+      );
+      return c.json(
+        v.blind
+          ? store.labeling(run.id, userId)
+          : { ...run, executedByUserId: userId },
+        201,
+      );
     } finally {
       running = false;
     }
