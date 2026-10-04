@@ -40,7 +40,7 @@ export interface RunSummary {
   finalized: boolean;
 }
 export interface Labeling {
-  run: Omit<Run, 'response'>;
+  run: Omit<Run, 'response' | 'rawResponse' | 'execution'>;
   draft: Draft;
   exposure: RunSummary['exposure'];
   revealed: boolean;

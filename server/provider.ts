@@ -13,7 +13,12 @@ export class ProviderError extends Error {
   }
 }
 export interface DecisionProvider {
-  evaluate(query: Query): Promise<DecisionResponse>;
+  evaluate(query: Query): Promise<
+    DecisionResponse & {
+      rawResponse?: unknown;
+      executionInfo?: { device?: string; baseModel?: string };
+    }
+  >;
 }
 export class JevProvider implements DecisionProvider {
   constructor(

@@ -16,6 +16,12 @@ import {
 import './style.css';
 import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
+import {
+  LOCAL_MODEL,
+  type ProviderId,
+  type ProviderHealth,
+  type AppConfig,
+} from '../shared/providers';
 import type { LocalUser, RunSummary, Labeling } from '../shared/evaluation';
 type Experiment = {
   id: string;
@@ -23,6 +29,7 @@ type Experiment = {
   query: Query;
   createdAt: string;
   createdByUserId?: string;
+  provider?: ProviderId;
 };
 import { api } from './api';
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
@@ -45,6 +52,15 @@ function App({
   );
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
   const [blind, setBlind] = useState(true);
+  const [provider, setProvider] = useState<ProviderId>(() =>
+    localStorage.getItem('decisionProvider') === 'strands-local'
+      ? 'strands-local'
+      : 'jev',
+  );
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const [health, setHealth] = useState<ProviderHealth | null>(null);
+  const [checking, setChecking] = useState(false);
+  const jevModel = useRef('jev-latest');
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -56,8 +72,16 @@ function App({
       ),
     [],
   );
-  const [query, setQuery] = useState<Query>(initialQuery),
-    [json, setJson] = useState(pretty(initialQuery)),
+  const [query, setQuery] = useState<Query>(() => ({
+      ...initialQuery,
+      model: provider === 'strands-local' ? LOCAL_MODEL : initialQuery.model,
+    })),
+    [json, setJson] = useState(() =>
+      pretty({
+        ...initialQuery,
+        model: provider === 'strands-local' ? LOCAL_MODEL : initialQuery.model,
+      }),
+    ),
     [mode, setMode] = useState<'form' | 'json'>('form');
   const [title, setTitle] = useState('サポート依頼のトリアージ'),
     [error, setError] = useState(''),
@@ -81,15 +105,61 @@ function App({
     const [r, e, c] = await Promise.all([
       request<RunSummary[]>('runs/summaries'),
       request<Experiment[]>('experiments'),
-      request<{ configured: boolean }>('config'),
+      request<AppConfig>('config'),
     ]);
     setRuns(r);
     setExperiments(e);
     setConfigured(c.configured);
+    setConfig(c);
+    if (
+      provider === 'strands-local' &&
+      query.model === LOCAL_MODEL &&
+      c.providers['strands-local'].model !== LOCAL_MODEL
+    )
+      update({ ...query, model: c.providers['strands-local'].model });
   }
   useEffect(() => {
     refresh().catch((e) => setError(e.message));
   }, []);
+  async function checkLocal() {
+    setChecking(true);
+    try {
+      setHealth(
+        await request<ProviderHealth>('providers/strands-local/health'),
+      );
+    } catch {
+      setHealth({ status: 'unreachable' });
+    } finally {
+      setChecking(false);
+    }
+  }
+  useEffect(() => {
+    if (provider === 'strands-local') void checkLocal();
+  }, [provider]);
+  function chooseProvider(next: ProviderId, q?: Query) {
+    if (!q && fieldError) {
+      setError('フォームの入力を修正してから接続先を切り替えてください。');
+      return;
+    }
+    const current = q ?? (mode === 'json' ? parseJson() : query);
+    if (!current) {
+      setError('JSONを修正してから接続先を切り替えてください。');
+      return;
+    }
+    if (!q && provider === 'jev') jevModel.current = current.model;
+    setProvider(next);
+    localStorage.setItem('decisionProvider', next);
+    update({
+      ...current,
+      model: q
+        ? q.model
+        : next === 'jev'
+          ? jevModel.current
+          : (config?.providers['strands-local'].model ?? LOCAL_MODEL),
+    });
+    setResult(null);
+    setError('');
+  }
   function update(next: Query) {
     setQuery(next);
     setJson(pretty(next));
@@ -127,6 +197,7 @@ function App({
       const saved = await request<Run | Experiment | Labeling>(kind, {
         title,
         query: q,
+        provider,
         blind: kind === 'runs' ? blind : undefined,
       });
       if (kind === 'runs') {
@@ -174,6 +245,7 @@ function App({
               onClick={() => {
                 void navigate(() => {
                   setWorkspace('playground');
+                  chooseProvider(e.provider ?? 'jev', e.query);
                   load(e.query, e.title);
                 });
               }}
@@ -215,6 +287,15 @@ function App({
             Typed judgments.
             <br />
             Ideas into decisions.
+            <p>
+              <a href="https://github.com/emguse/decision-lab/blob/main/LICENSE">
+                MIT License
+              </a>
+              {' · '}
+              <a href="https://github.com/emguse/decision-lab/blob/main/THIRD_PARTY_NOTICES.md">
+                Third-party notices
+              </a>
+            </p>
           </footer>
         </aside>
         <main>
@@ -242,8 +323,9 @@ function App({
               user={user}
               users={users}
               beforeSwitch={beforeSwitch}
-              onCopy={(q, t) =>
+              onCopy={(q, t, p) =>
                 void navigate(() => {
+                  chooseProvider(p ?? 'jev', q);
                   load(q, t);
                   setWorkspace('playground');
                 })
@@ -254,26 +336,77 @@ function App({
             <>
               <header>
                 <div>
-                  <div className="eyebrow">PLAYGROUND / JEV</div>
+                  <div className="eyebrow">PLAYGROUND / DECISION LAB</div>
                   <h1>文章は作りません。判断をします。</h1>
                   <p>入力と質問を組み立て、モデルの判断を確率で確かめる。</p>
                 </div>
-                <div className={`status ${configured ? 'ready' : ''}`}>
+                <div
+                  className={`status ${(provider === 'strands-local' ? health?.status === 'ready' : configured) ? 'ready' : ''}`}
+                >
                   ●{' '}
-                  {configured === null
-                    ? '接続確認中'
-                    : configured
-                      ? 'API KEY READY'
-                      : 'API KEY 未設定'}
+                  {provider === 'strands-local'
+                    ? health?.status === 'ready'
+                      ? 'LOCAL READY'
+                      : 'LOCAL 未接続'
+                    : configured === null
+                      ? '接続確認中'
+                      : configured
+                        ? 'API KEY READY'
+                        : 'API KEY 未設定'}
                 </div>
               </header>
-              {configured === false && (
+              {provider === 'jev' && configured === false && (
                 <div className="setup">
                   開始するには <code>.env</code> に{' '}
                   <code>TYPESAFE_API_KEY</code>{' '}
                   を設定し、サーバーを再起動してください。
                 </div>
               )}
+              <div className="panel provider-panel">
+                <label>
+                  接続先
+                  <select
+                    aria-label="接続先"
+                    value={provider}
+                    disabled={busy}
+                    onChange={(e) =>
+                      chooseProvider(e.target.value as ProviderId)
+                    }
+                  >
+                    <option value="jev">Jev API</option>
+                    <option value="strands-local">
+                      Local · Strands Decider
+                    </option>
+                  </select>
+                </label>
+                {provider === 'strands-local' && (
+                  <>
+                    <p>
+                      ローカルモデル：
+                      {config?.providers['strands-local'].model ?? LOCAL_MODEL}
+                    </p>
+                    <button
+                      disabled={checking || busy}
+                      onClick={() => void checkLocal()}
+                    >
+                      接続を確認
+                    </button>
+                    <p role="status">
+                      {health?.status === 'ready'
+                        ? `接続済み · ${health.model} · ${health.device}`
+                        : health?.status === 'mismatch'
+                          ? 'モデル不一致：Pythonサーバーと設定を確認してください。'
+                          : health?.status === 'unconfigured'
+                            ? 'LOCAL_DECISION_BASE_URL を設定してください。'
+                            : 'Pythonサーバーを起動して接続を確認してください。'}
+                    </p>
+                    <p className="hint">
+                      モデルはPython側でロードします。Score基準は文字列、Choiceは2択以上です。
+                      長い入力の切り詰め拒否は未確認です。精度評価前にランタイムの対応を確認してください。
+                    </p>
+                  </>
+                )}
+              </div>
               <label className="blind-toggle">
                 <input
                   type="checkbox"
@@ -312,7 +445,9 @@ function App({
                   disabled={
                     fieldError ||
                     busy ||
-                    !configured ||
+                    (provider === 'jev'
+                      ? !configured
+                      : !config?.providers['strands-local'].configured) ||
                     !jsonValid ||
                     !valid.success ||
                     !title.trim()
@@ -376,6 +511,7 @@ function App({
                     モデル
                     <input
                       aria-label="モデル"
+                      readOnly={provider === 'strands-local'}
                       value={query.model}
                       onChange={(e) =>
                         update({ ...query, model: e.target.value })
@@ -587,7 +723,7 @@ function App({
                 </section>
               </div>
               <div className="bottom-note">
-                Jev API · 自動再試行なし ·
+                判断モデル · 自動再試行なし ·
                 入力と実行結果はこの端末に保存されます
               </div>
             </>

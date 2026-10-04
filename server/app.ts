@@ -4,12 +4,16 @@ import { z } from 'zod';
 import { requestSchema } from '../shared/schema.js';
 import { ProviderError, type DecisionProvider } from './provider.js';
 import { SCHEMA_VERSION, StoreError, type Store } from './store.js';
+import { providerIdSchema } from '../shared/providers.js';
+import type { LocalDecisionProvider } from './local-provider.js';
 import { draftSchema } from '../shared/evaluation.js';
 export function createApp(
   store: Store,
   provider: DecisionProvider,
   configured: boolean,
+  local?: LocalDecisionProvider,
 ) {
+  const providers = { jev: provider, 'strands-local': local };
   const app = new Hono();
   app.use('/api/*', async (c, next) => {
     const host = c.req.header('host');
@@ -39,7 +43,7 @@ export function createApp(
     if (error instanceof ProviderError)
       return c.json(
         { error: error.message, code: error.code },
-        error.status as 429 | 502 | 503 | 504,
+        error.status as 422 | 429 | 502 | 503 | 504,
       );
     if (error instanceof z.ZodError || error instanceof SyntaxError)
       return c.json({ error: '入力形式を確認してください。' }, 400);
@@ -49,9 +53,19 @@ export function createApp(
     c.json({
       configured,
       provider: 'jev',
+      providers: {
+        jev: { configured, model: 'jev-latest' },
+        'strands-local': {
+          configured: local?.configured ?? false,
+          model: local?.model ?? 'StrandsAgents/strands-decider-2B-hobson-v19',
+        },
+      },
       schemaVersion: SCHEMA_VERSION,
       recordFormatVersion: 1,
     }),
+  );
+  app.get('/api/providers/strands-local/health', async (c) =>
+    c.json(local ? await local.health() : { status: 'unconfigured' }),
   );
   const actor = (c: { req: { header(name: string): string | undefined } }) =>
     store.actor(c.req.header('X-Local-User'));
@@ -116,15 +130,26 @@ export function createApp(
     title: z.string().trim().min(1).max(120),
     query: requestSchema,
     blind: z.boolean().optional(),
+    provider: providerIdSchema.default('jev'),
   });
   app.post('/api/experiments', async (c) => {
     const v = input.parse(await c.req.json());
-    return c.json(store.saveExperiment(v.title, v.query, actor(c)), 201);
+    return c.json(
+      store.saveExperiment(v.title, v.query, actor(c), v.provider),
+      201,
+    );
   });
   let running = false;
   app.post('/api/runs', async (c) => {
     const userId = actor(c);
     const v = input.parse(await c.req.json());
+    const selected = providers[v.provider];
+    if (!selected)
+      throw new ProviderError(
+        503,
+        'local_not_configured',
+        'ローカルPythonサーバーの接続先を設定してください。',
+      );
     if (running)
       return c.json(
         { error: '実行中のクエリが完了するまでお待ちください。' },
@@ -133,7 +158,8 @@ export function createApp(
     running = true;
     try {
       const start = performance.now();
-      const response = await provider.evaluate(v.query);
+      const output = await selected.evaluate(v.query);
+      const { rawResponse, executionInfo, ...response } = output;
       const run = store.saveRun(
         {
           title: v.title,
@@ -144,6 +170,15 @@ export function createApp(
         },
         userId,
         v.blind ?? false,
+        {
+          formatVersion: 1,
+          provider: v.provider,
+          requestedModel: v.query.model,
+          resolvedModel: response.model,
+          artifactRevision: null,
+          ...(v.provider === 'strands-local' ? executionInfo : {}),
+        },
+        rawResponse,
       );
       return c.json(
         v.blind
