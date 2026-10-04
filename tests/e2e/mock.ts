@@ -11,6 +11,7 @@ export async function mockApi(
     failure?: boolean;
     delay?: number;
     local?: boolean;
+    localModel?: string;
     localFailure?: boolean;
     jevConfigured?: boolean;
   } = {},
@@ -18,15 +19,16 @@ export async function mockApi(
   const store = new Store(':memory:');
   let calls = 0;
   let localCalls = 0;
+  const localModel = options.localModel ?? LOCAL_MODEL;
   const local = options.local
     ? new LocalDecisionProvider(
         'http://127.0.0.1:8000',
-        LOCAL_MODEL,
+        localModel,
         async (url) => {
           if (String(url).endsWith('/health'))
             return Response.json({
               status: 'ok',
-              model: LOCAL_MODEL.split('/').at(-1),
+              model: localModel.split('/').at(-1),
               device: 'mps',
               max_length: 4096,
               base_model: 'Qwen/Qwen3.5-2B-Base',
@@ -37,7 +39,7 @@ export async function mockApi(
             return Response.json({ detail: 'overflow' }, { status: 422 });
           return Response.json({
             ...fixture,
-            model: LOCAL_MODEL.split('/').at(-1),
+            model: localModel.split('/').at(-1),
           });
         },
       )
