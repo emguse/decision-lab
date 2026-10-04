@@ -151,11 +151,10 @@ function App({
     localStorage.setItem('decisionProvider', next);
     update({
       ...current,
-      model: q
-        ? q.model
-        : next === 'jev'
-          ? jevModel.current
-          : (config?.providers['strands-local'].model ?? LOCAL_MODEL),
+      model:
+        next === 'strands-local'
+          ? (config?.providers['strands-local'].model ?? LOCAL_MODEL)
+          : (q?.model ?? jevModel.current),
     });
     setResult(null);
     setError('');
@@ -175,11 +174,9 @@ function App({
       );
     }
   }
-  function load(q: Query, t: string, r: Run | null = null) {
-    update(q);
+  function load(q: Query, t: string, next: ProviderId) {
+    chooseProvider(next, q);
     setTitle(t);
-    setResult(r);
-    setError('');
     setMode('form');
   }
   async function submit(kind: 'runs' | 'experiments') {
@@ -245,8 +242,7 @@ function App({
               onClick={() => {
                 void navigate(() => {
                   setWorkspace('playground');
-                  chooseProvider(e.provider ?? 'jev', e.query);
-                  load(e.query, e.title);
+                  load(e.query, e.title, e.provider ?? 'jev');
                 });
               }}
             >
@@ -325,8 +321,7 @@ function App({
               beforeSwitch={beforeSwitch}
               onCopy={(q, t, p) =>
                 void navigate(() => {
-                  chooseProvider(p ?? 'jev', q);
-                  load(q, t);
+                  load(q, t, p ?? 'jev');
                   setWorkspace('playground');
                 })
               }
