@@ -49,7 +49,7 @@ The server uses Node's built-in SQLite (`node:sqlite`); the database defaults to
 
 Requests go to `POST https://api.typesafe.ai/v1/systemone` with server-side Bearer authentication. Each execution makes one request, with a 60-second timeout and no automatic retries. Concurrent executions are rejected. A timed-out request may still incur provider usage. If local persistence fails after a successful API call, execution reports an error; rerunning makes another paid request.
 
-The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for one trusted local user, not public hosting. Draft saves do not call the provider. Clef, image input, AI drafting, and batch evaluation are future extensions. The current evaluation release labels already saved single-query results without another model request.
+The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for trusted local users, not public hosting. Draft saves do not call the provider. Clef, image input, AI drafting, and batch evaluation are future extensions. Local Strands inference runs through a separate Python HTTP server. The current evaluation release labels already saved single-query results without another model request.
 
 ## Local users and blind evaluation
 
@@ -65,7 +65,7 @@ Existing records are attributed to “旧データ・作成者不明”. Their e
 
 ## Database versions, backup, and recovery
 
-Application release 0.2.0 uses SQLite schema 2 (`PRAGMA user_version`) and record format 1. Those versions serve different purposes. Migration 1 adds local identities/attribution; migration 2 adds evaluator assignments, drafts, exposure, and immutable label/reference revisions. Original run/experiment JSON is retained byte-for-byte. New databases apply the same migrations. Future schema versions are rejected rather than downgraded.
+Application release 0.3.0 uses SQLite schema 3 (`PRAGMA user_version`) and record format 1. Those versions serve different purposes. Migration 1 adds local identities/attribution; migration 2 adds evaluator assignments, drafts, exposure, and immutable label/reference revisions. Migration 3 adds provider metadata and original local responses in separate tables. Existing records default to Jev; original run/experiment JSON is retained byte-for-byte. New databases apply the same migrations. Future schema versions are rejected rather than downgraded.
 
 Before upgrading an existing database, startup uses SQLite's backup API to create `<database>.backup-v<version>-<timestamp>-<uuid>.sqlite`. This is a consistent backup including committed WAL data. Backup failure prevents migration. Each migration is transactional, including its version update; failure rolls back that migration and stops startup. Keep the automatically generated backups until the upgrade has been verified. Stop older application processes before upgrading; old releases are not safe writers for newer schemas.
 
@@ -88,3 +88,63 @@ Live verification requires a configured `.env`. It validates the real response a
 - [Decision primitives](https://docs.typesafe.ai/primitives)
 - [Confidence](https://docs.typesafe.ai/confidence)
 - [Installed TypeSafe skill](.agents/skills/typesafe-ai/SKILL.md)
+
+## Local Strands Decider
+
+Choose **Local · Strands Decider** in Playground. It needs no Jev key. Node/Hono connects to a separately running Python server; the browser never contacts Python directly. There is no automatic retry or cloud fallback. Saving an experiment preserves its provider; reopening uses the current server configuration. Model loading and downloads happen only when you launch Python.
+
+Create a separate Python 3.12 virtual environment. The following installation targets the official source revision inspected for this adapter; its dependency ranges are upstream's, and the complete Python environment has not been run on this machine. Record `pip freeze` after a successful installation.
+
+```sh
+python3.12 -m venv /tmp/strands-venv
+source /tmp/strands-venv/bin/activate
+pip install "strands-decider @ git+https://github.com/strands-labs/strands-decider.git@75c9fd32e664954cdc18481434018aa507eee8fb"
+strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 \
+  --device mps --strict-window --port 8000
+```
+
+Use `--device cpu` for CPU-only machines; expect different latency. MPS targets Apple Silicon. MLX and CUDA have additional upstream installation requirements; consult the [official inference guide](https://github.com/strands-labs/strands-decider/blob/75c9fd32e664954cdc18481434018aa507eee8fb/docs/inference.md) before choosing those devices. The published adapter is about 92 MB; base weights download separately (about 4.55 GB), plus Python dependencies. Cache is normally under `~/.cache/huggingface/hub` (overridable through Hugging Face settings). Disk size is not runtime RAM. Measure initial loading, warm latency, and peak memory on the target machine; offline operation is unverified.
+
+Add to `.env`, then restart Decision Lab:
+
+```dotenv
+LOCAL_DECISION_BASE_URL=http://127.0.0.1:8000
+LOCAL_DECISION_MODEL=StrandsAgents/strands-decider-2B-hobson-v19
+LOCAL_DECISION_TIMEOUT_MS=60000
+```
+
+Only explicit `127.0.0.1`/`[::1]` HTTP origins are accepted, with no credentials, path, query, or fragment; redirects are refused. Health checks expose only selected model/device/context fields, never checkpoint paths. The adapter expects the served model name to match the configured ID's final component. The official server ignores the request model selector: change its checkpoint by restarting Python, then update app configuration. Names do not verify exact weight revisions, which remain unknown in saved metadata.
+
+This pinned runtime requires at least two Choice options and string-only Score levels. Structured state, instructions, Choice descriptions, and explicit Noul criteria are retained; unsupported Score criteria are rejected instead of converted. The inspected source revision supports `--strict-window` to reject oversized prompts; installed PyPI 0.1.0 does not. Check `strands-decider serve --help` before using that flag. PyPI 0.1.0 contains truncation paths, so short smoke tests do not establish reliable handling of long inputs. Health does not expose strict mode, so Decision Lab cannot verify that flag. Input overflow is shown as an error. Timeout can leave inference running on Python; check that process before manually retrying.
+
+After Python is ready, use **接続を確認** and execute a blind query, or run `npm run test:local` with the Hono app running on port 8787. The script saves a Japanese three-question run, finalizes fixed fixture reference labels, and reloads its evaluation; it only selects the local provider and never calls Jev. It demonstrates the workflow, not general accuracy. Automated tests use mock wire fixtures; the live acceptance results and remaining limits are listed below. Japanese quality beyond the fixture, strict overflow rejection, complete memory use, and cold-start loading still require measurement.
+
+Runs store requested/returned model names, reported device/base model, and original local JSON separately from normalized answers. Missing usage displays as unavailable. Local token counts describe that runtime's accounting, not Jev billing; confidence is provider-specific distribution concentration and should not be compared as a universal correctness score. Existing labels/revisions and legacy JSON are preserved by schema 3.
+
+### Local acceptance (2026-10-04)
+
+A user-prepared server at `127.0.0.1:8012` reported `strands-decider-2B-hobson-v19`, MPS, and a 4096-token window. A short Japanese input successfully returned all three answer types, was saved blind, finalized against fixed references, and displayed/reloaded through the browser. App round-trip time was 7314 ms on the first check and 1794 ms on a second identical check with the model already loaded. These two samples are not a latency benchmark. A sanitized response fixture is stored in `tests/fixtures/strands-v19-response.json`. No Jev calls were made.
+
+Structured state and structured Noul instructions were accepted in a direct diagnostic request. A request containing structured/null option descriptions and structured Noul criteria was rejected with HTTP 422 by this installed runtime; the app preserves the input and reports incompatibility rather than coercing it. The runtime Git revision could not be established, and these results do not establish compatibility with every upstream revision. The installed package was subsequently identified as PyPI `strands-decider 0.1.0`; its CLI rejects `--strict-window`, and its source contains truncation paths. For short trials, keep the original launch command without that flag. For long-input evaluation, use a verified runtime with overflow rejection; the app cannot provide an equivalent token-level check by itself. Complete GPU/unified memory, cold load, strict overflow, and offline operation remain unverified.
+
+### PyPI 0.1.0 versus the inspected source revision
+
+The already installed PyPI 0.1.0 works for the tested short queries. Launch it without the unsupported option:
+
+```sh
+uv run strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 \
+  --device mps --host 127.0.0.1 --port 8012
+```
+
+If overflow rejection is needed, the inspected official source revision contains that flag. From the separate Python project's directory, an explicit update can pin it:
+
+```sh
+uv add "strands-decider @ git+https://github.com/strands-labs/strands-decider.git@75c9fd32e664954cdc18481434018aa507eee8fb"
+uv run strands-decider serve --help
+```
+
+This updates the Python project's dependency and lockfile; Decision Lab does not perform it. Stop the old server before relaunching with `--strict-window`, verify all three question types and actual overflow rejection, and record the new runtime/lockfile. Installation and full execution of this source revision remain unverified on this machine.
+
+## License
+
+Decision Lab is licensed under the [MIT License](LICENSE), copyright 2026 emguse and contributors. Third-party dependencies, the installed TypeSafe skill, and separately installed model/runtime components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Strands Decider, its v19 adapter/head, and the Qwen3.5 base model are Apache-2.0, not covered by this application's MIT grant.

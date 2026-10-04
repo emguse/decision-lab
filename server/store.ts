@@ -1,3 +1,8 @@
+import {
+  executionMetadataSchema,
+  type ExecutionMetadata,
+  type ProviderId,
+} from '../shared/providers.js';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -20,7 +25,7 @@ export class StoreError extends Error {
     super(message);
   }
 }
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const legacy = 'legacy-unknown';
 const migrations = [
   `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -31,6 +36,8 @@ const migrations = [
  CREATE TABLE annotations(run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,PRIMARY KEY(run_id,user_id));
  CREATE TABLE exposures(run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),revealed_at TEXT NOT NULL,PRIMARY KEY(run_id,user_id));
  CREATE TABLE revisions(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,body TEXT NOT NULL);`,
+  `CREATE TABLE run_metadata(run_id TEXT PRIMARY KEY REFERENCES runs(id),body TEXT NOT NULL,raw_body TEXT);
+ CREATE TABLE experiment_metadata(experiment_id TEXT PRIMARY KEY REFERENCES experiments(id),provider TEXT NOT NULL,format_version INTEGER NOT NULL DEFAULT 1);`,
 ];
 export class Store {
   private db: DatabaseSync;
@@ -134,7 +141,13 @@ export class Store {
       );
     return { userId: String(r.user_id), blind: Boolean(r.blind) };
   }
-  saveRun(run: Omit<Run, 'id'>, actor = this.actor(), blind = false): Run {
+  saveRun(
+    run: Omit<Run, 'id'>,
+    actor = this.actor(),
+    blind = false,
+    execution?: ExecutionMetadata,
+    rawResponse?: unknown,
+  ): Run {
     this.actor(actor);
     const saved = { ...run, id: randomUUID() };
     this.transaction(() => {
@@ -146,16 +159,54 @@ export class Store {
           'INSERT INTO attribution(id,entity,user_id,blind) VALUES (?,?,?,?)',
         )
         .run(saved.id, 'run', actor, Number(blind));
+      this.db.prepare('INSERT INTO run_metadata VALUES (?,?,?)').run(
+        saved.id,
+        JSON.stringify(
+          execution ?? {
+            formatVersion: 1,
+            provider: 'jev',
+            requestedModel: saved.query.model,
+            resolvedModel: saved.response.model,
+            artifactRevision: null,
+          },
+        ),
+        rawResponse === undefined ? null : JSON.stringify(rawResponse),
+      );
       this.assign(saved.id, actor);
       if (!blind) this.reveal(saved.id, actor);
     });
-    return saved;
+    return this.getRun(saved.id);
   }
   getRun(id: string): Run {
     this.attribution(id);
     const r = this.db.prepare('SELECT body FROM runs WHERE id=?').get(id);
     if (!r) throw new StoreError(404, '実行結果が見つかりません。');
-    return JSON.parse(String(r.body));
+    const run: Run = JSON.parse(String(r.body));
+    const meta = this.db
+      .prepare('SELECT body,raw_body FROM run_metadata WHERE run_id=?')
+      .get(id);
+    const parsedExecution = executionMetadataSchema.safeParse(
+      meta
+        ? JSON.parse(String(meta.body))
+        : {
+            formatVersion: 1,
+            provider: 'jev',
+            requestedModel: run.query.model,
+            resolvedModel: run.response.model,
+          },
+    );
+    if (!parsedExecution.success)
+      throw new StoreError(
+        409,
+        '保存形式が未対応です。アプリを更新してください。',
+      );
+    return {
+      ...run,
+      execution: parsedExecution.data!,
+      ...(meta?.raw_body
+        ? { rawResponse: JSON.parse(String(meta.raw_body)) }
+        : {}),
+    };
   }
   private runIds() {
     return this.db
@@ -186,7 +237,12 @@ export class Store {
       };
     });
   }
-  saveExperiment(title: string, query: Query, actor = this.actor()) {
+  saveExperiment(
+    title: string,
+    query: Query,
+    actor = this.actor(),
+    provider: ProviderId = 'jev',
+  ) {
     const saved = {
       id: randomUUID(),
       title,
@@ -200,8 +256,23 @@ export class Store {
       this.db
         .prepare('INSERT INTO attribution(id,entity,user_id) VALUES (?,?,?)')
         .run(saved.id, 'experiment', this.actor(actor));
+      this.db
+        .prepare('INSERT INTO experiment_metadata VALUES (?,?,1)')
+        .run(saved.id, provider);
     });
-    return { ...saved, createdByUserId: actor };
+    return { ...saved, createdByUserId: actor, provider };
+  }
+  private experimentProvider(id: string): ProviderId {
+    const meta = this.db
+      .prepare(
+        'SELECT provider,format_version FROM experiment_metadata WHERE experiment_id=?',
+      )
+      .get(id);
+    if (meta && Number(meta.format_version) !== 1)
+      throw new StoreError(409, '保存形式が未対応です。');
+    return meta
+      ? executionMetadataSchema.shape.provider.parse(meta.provider)
+      : 'jev';
   }
   listExperiments() {
     return this.db
@@ -210,6 +281,7 @@ export class Store {
       .map((r) => ({
         ...JSON.parse(String(r.body)),
         createdByUserId: this.attribution(String(r.id), 'experiment').userId,
+        provider: this.experimentProvider(String(r.id)),
       }));
   }
   assign(id: string, actor: string) {
@@ -261,7 +333,12 @@ export class Store {
   }
   labeling(id: string, actor: string): Labeling {
     this.assign(id, actor);
-    const { response: _, ...run } = this.getRun(id);
+    const {
+      response: _,
+      rawResponse: _raw,
+      execution: _execution,
+      ...run
+    } = this.getRun(id);
     const r = this.db
       .prepare('SELECT body FROM annotations WHERE run_id=? AND user_id=?')
       .get(id, actor);

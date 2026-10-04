@@ -1,0 +1,39 @@
+{
+  "model": "strands-decider-2B-hobson-v19",
+  "answers": {
+    "is_urgent": {
+      "type": "noul",
+      "noul": 0.884
+    },
+    "department": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+        "billing": 0.959,
+        "technical": 0.0206,
+        "sales": 0.0204
+      },
+      "confidence": 0.9385
+    },
+    "frustration": {
+      "type": "score",
+      "score": 1.3431,
+      "legend": {
+        "0": "Calm",
+        "1": "Frustrated",
+        "2": "Very angry"
+      },
+      "probabilities": {
+        "0": 0.1193,
+        "1": 0.4183,
+        "2": 0.4624
+      },
+      "confidence": 0.4663
+    }
+  },
+  "usage": {
+    "input_tokens": 225,
+    "output_tokens": 3
+  },
+  "latency_ms": 7305.17
+}

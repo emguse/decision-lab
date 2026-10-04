@@ -1,3 +1,5 @@
+import { LocalDecisionProvider } from '../../server/local-provider';
+import { LOCAL_MODEL } from '../../shared/providers';
 import type { Page } from '@playwright/test';
 import { Store } from '../../server/store';
 import { createApp } from '../../server/app';
@@ -5,10 +7,41 @@ import { validateResponse, initialQuery } from '../../shared/schema';
 import { fixture } from '../fixture';
 export async function mockApi(
   page: Page,
-  options: { failure?: boolean; delay?: number } = {},
+  options: {
+    failure?: boolean;
+    delay?: number;
+    local?: boolean;
+    localFailure?: boolean;
+    jevConfigured?: boolean;
+  } = {},
 ) {
   const store = new Store(':memory:');
   let calls = 0;
+  let localCalls = 0;
+  const local = options.local
+    ? new LocalDecisionProvider(
+        'http://127.0.0.1:8000',
+        LOCAL_MODEL,
+        async (url) => {
+          if (String(url).endsWith('/health'))
+            return Response.json({
+              status: 'ok',
+              model: LOCAL_MODEL.split('/').at(-1),
+              device: 'mps',
+              max_length: 4096,
+              base_model: 'Qwen/Qwen3.5-2B-Base',
+              checkpoint: '/private/checkpoint',
+            });
+          localCalls++;
+          if (options.localFailure)
+            return Response.json({ detail: 'overflow' }, { status: 422 });
+          return Response.json({
+            ...fixture,
+            model: LOCAL_MODEL.split('/').at(-1),
+          });
+        },
+      )
+    : undefined;
   const app = createApp(
     store,
     {
@@ -34,7 +67,8 @@ export async function mockApi(
         );
       },
     },
-    true,
+    options.jevConfigured ?? true,
+    local,
   );
   const bodies: { path: string; body: unknown; user: string | undefined }[] =
     [];
@@ -51,5 +85,5 @@ export async function mockApi(
     bodies.push({ path, body, user: request.headers()['x-local-user'] });
     await route.fulfill({ status: response.status, json: body });
   });
-  return { store, bodies, calls: () => calls };
+  return { store, bodies, calls: () => calls, localCalls: () => localCalls };
 }

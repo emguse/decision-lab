@@ -11,6 +11,7 @@ import {
   type LocalUser,
   type Revision,
 } from '../shared/evaluation';
+import type { ProviderId } from '../shared/providers';
 import type { Query } from '../shared/schema';
 const pretty = (v: unknown) =>
   typeof v === 'string' ? v : JSON.stringify(v, null, 2);
@@ -97,7 +98,7 @@ export function EvaluationWorkspace({
   user: LocalUser;
   users: LocalUser[];
   beforeSwitch: MutableRefObject<null | (() => Promise<void>)>;
-  onCopy: (q: Query, t: string) => void;
+  onCopy: (q: Query, t: string, provider?: ProviderId) => void;
   onChanged: () => Promise<void>;
 }) {
   const [data, setData] = useState<Labeling | null>(null),
@@ -506,7 +507,15 @@ export function EvaluationWorkspace({
                 <summary>モデル回答・確率を見る</summary>
                 <ResultView result={evaluation.run} />
               </details>
-              <button onClick={() => onCopy(data.run.query, data.run.title)}>
+              <button
+                onClick={() =>
+                  onCopy(
+                    data.run.query,
+                    data.run.title,
+                    evaluation.run.execution?.provider,
+                  )
+                }
+              >
                 入力と質問を Playground にコピー
               </button>
               <div className="comparison">

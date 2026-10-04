@@ -66,8 +66,12 @@ export function ResultView({ result }: { result: Run }) {
       ))}
       <details className="raw">
         <summary>生のレスポンス</summary>
-        <pre>{pretty(result.response)}</pre>
+        <pre>{pretty(result.rawResponse ?? result.response)}</pre>
       </details>
+      <p className="hint">
+        接続先：{result.execution?.provider ?? 'jev'} · モデルの正確な重み版：
+        {result.execution?.artifactRevision ?? '不明'}
+      </p>
       <details className="raw">
         <summary>実行時のクエリ</summary>
         <pre>{pretty(result.query)}</pre>

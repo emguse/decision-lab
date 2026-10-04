@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ExecutionMetadata } from './providers.js';
 const content = z.union([
   z.string(),
   z.record(z.string(), z.json()),
@@ -92,6 +93,8 @@ export interface Run {
   query: Query;
   response: DecisionResponse;
   elapsedMs: number;
+  execution?: ExecutionMetadata;
+  rawResponse?: unknown;
 }
 export const initialQuery: Query = {
   model: 'jev-latest',
