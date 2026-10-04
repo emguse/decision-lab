@@ -4,7 +4,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
 import { JevProvider } from './provider.js';
 import { Store } from './store.js';
-const store = new Store(process.env.DATABASE_PATH || 'data/jev.sqlite');
+const store = await Store.open(process.env.DATABASE_PATH || 'data/jev.sqlite');
 const app = createApp(
   store,
   new JevProvider(process.env.TYPESAFE_API_KEY),

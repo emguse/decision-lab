@@ -8,7 +8,7 @@ Keep provider-specific authentication and HTTP handling behind `DecisionProvider
 
 ## Build, Test, and Development Commands
 
-Use Node.js 22.13+ and npm; commit `package-lock.json` when dependencies change.
+Use Node.js 22.16+ and npm; commit `package-lock.json` when dependencies change.
 
 - `npm install`: install dependencies.
 - `npm run dev`: start Vite and the local Hono API.
@@ -24,12 +24,16 @@ Use strict TypeScript, two-space indentation, descriptive camelCase identifiers,
 
 ## Testing Guidelines
 
-Name unit/integration tests `*.test.ts` and browser tests `*.spec.ts`. Cover malformed inputs, response compatibility, provider failures, duplicate execution prevention, and persistence. Browser tests mock `/api` and must not use real credentials. No coverage percentage is imposed. Paid API verification must be explicit and must never print credentials.
+Name unit/integration tests `*.test.ts` and browser tests `*.spec.ts`. Cover migration/backup recovery, label provenance, per-evaluator blindness, profile switching, provider failures, and persistence. Browser tests mock `/api` and must not use real credentials. No coverage percentage is imposed. Paid API verification must be explicit and must never print credentials.
 
 ## Commit & Pull Request Guidelines
 
-No historical commit convention exists yet. Use focused imperative subjects, such as `Add Jev response validation`. PRs should explain behavior, validation performed, and limitations; link relevant issues and include screenshots for UI changes.
+Use the established imperative commit style (`Add local Jev decision playground`). Use focused imperative subjects, such as `Add Jev response validation`. PRs should explain behavior, validation performed, and limitations; link relevant issues and include screenshots for UI changes.
 
 ## Security & Agent Instructions
 
 Keep `.env` and API keys server-side and out of Git and logs. Bind local servers to loopback. Read and apply `.agents/skills/typesafe-ai/SKILL.md` when working on TypeSafe integrations, and verify changing contracts against official live documentation. Distinguish observed behavior from assumptions.
+
+## Persistence Compatibility
+
+Open persistent stores with `await Store.open(path)` so backup precedes migration. Keep released migrations immutable. Preserve legacy JSON, refuse unsupported future schema versions, and distinguish application/schema/record versions. Local user IDs are attribution, not authentication. Never return predictions through blind-labeling endpoints; finalized labels and reference adoption must remain revisioned.

@@ -1,47 +1,379 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { DatabaseSync, backup } from 'node:sqlite';
+import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Run, Query } from '../shared/schema.js';
+import {
+  emptyDraft,
+  validateLabels,
+  type Draft,
+  type Revision,
+  type LocalUser,
+  type Labeling,
+  type RunSummary,
+} from '../shared/evaluation.js';
+export class StoreError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+export const SCHEMA_VERSION = 2;
+const legacy = 'legacy-unknown';
+const migrations = [
+  `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS experiments (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+ CREATE TABLE users(id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL);
+ CREATE TABLE attribution(id TEXT NOT NULL,entity TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),format_version INTEGER NOT NULL DEFAULT 1,blind INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(id,entity));`,
+  `CREATE TABLE assignments(run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(run_id,user_id));
+ CREATE TABLE annotations(run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,PRIMARY KEY(run_id,user_id));
+ CREATE TABLE exposures(run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),revealed_at TEXT NOT NULL,PRIMARY KEY(run_id,user_id));
+ CREATE TABLE revisions(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,body TEXT NOT NULL);`,
+];
 export class Store {
   private db: DatabaseSync;
-  constructor(path: string) {
-    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec(
-      `PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS experiments (id TEXT PRIMARY KEY, body TEXT NOT NULL);`,
-    );
+  static async open(path: string) {
+    if (path === ':memory:') return new Store(path);
+    mkdirSync(dirname(path), { recursive: true });
+    const existed = existsSync(path);
+    const db = new DatabaseSync(path);
+    try {
+      const version = Number(
+        db.prepare('PRAGMA user_version').get()!.user_version,
+      );
+      if (version > SCHEMA_VERSION)
+        throw new Error(
+          `Database schema ${version} is newer than supported ${SCHEMA_VERSION}. Upgrade the app or restore a compatible backup.`,
+        );
+      if (existed && version < SCHEMA_VERSION) {
+        const target = `${path}.backup-v${version}-${Date.now()}-${randomUUID()}.sqlite`;
+        await backup(db, target);
+        console.log(
+          `SQLite backup: ${target} (schema ${version} → ${SCHEMA_VERSION})`,
+        );
+      }
+    } finally {
+      db.close();
+    }
+    return new Store(path, true);
   }
-  saveRun(run: Omit<Run, 'id'>): Run {
-    const saved = { ...run, id: randomUUID() };
+  constructor(path: string, backedUp = false) {
+    if (path !== ':memory:' && !backedUp)
+      throw new Error('Use await Store.open(path) for persistent databases');
+    this.db = new DatabaseSync(path);
+    try {
+      this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+      let version = Number(
+        this.db.prepare('PRAGMA user_version').get()!.user_version,
+      );
+      if (version > SCHEMA_VERSION)
+        throw new Error('Database is newer than this app');
+      for (; version < SCHEMA_VERSION; version++)
+        this.transaction(() => {
+          this.db.exec(migrations[version]);
+          if (version === 0) {
+            this.db
+              .prepare('INSERT INTO users VALUES (?,?,?)')
+              .run(legacy, '旧データ・作成者不明', 'legacy');
+            this.db
+              .prepare('INSERT INTO users VALUES (?,?,?)')
+              .run(randomUUID(), '自分', 'local');
+            this.db.exec(
+              `INSERT INTO attribution(id,entity,user_id) SELECT id,'run','${legacy}' FROM runs; INSERT INTO attribution(id,entity,user_id) SELECT id,'experiment','${legacy}' FROM experiments;`,
+            );
+          }
+          this.db.exec(`PRAGMA user_version=${version + 1}`);
+        });
+      this.db.exec('PRAGMA journal_mode=WAL;');
+    } catch (e) {
+      this.db.close();
+      throw e;
+    }
+  }
+  private transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const v = fn();
+      this.db.exec('COMMIT');
+      return v;
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+  listUsers(): LocalUser[] {
+    return this.db
+      .prepare('SELECT id,name,kind FROM users ORDER BY rowid')
+      .all() as unknown as LocalUser[];
+  }
+  actor(id?: string) {
+    const user = id
+      ? this.listUsers().find((u) => u.id === id && u.kind === 'local')
+      : this.listUsers().find((u) => u.kind === 'local');
+    if (!user) throw new StoreError(400, '利用者が存在しません。');
+    return user.id;
+  }
+  addUser(name: string) {
+    const user: LocalUser = { id: randomUUID(), name, kind: 'local' };
     this.db
-      .prepare('INSERT INTO runs VALUES (?,?)')
-      .run(saved.id, JSON.stringify(saved));
+      .prepare('INSERT INTO users VALUES (?,?,?)')
+      .run(user.id, user.name, user.kind);
+    return user;
+  }
+  attribution(id: string, entity = 'run') {
+    const r = this.db
+      .prepare('SELECT * FROM attribution WHERE id=? AND entity=?')
+      .get(id, entity);
+    if (!r) throw new StoreError(404, '保存データが見つかりません。');
+    if (Number(r.format_version) !== 1)
+      throw new StoreError(
+        409,
+        '保存形式が未対応です。アプリを更新してください。',
+      );
+    return { userId: String(r.user_id), blind: Boolean(r.blind) };
+  }
+  saveRun(run: Omit<Run, 'id'>, actor = this.actor(), blind = false): Run {
+    this.actor(actor);
+    const saved = { ...run, id: randomUUID() };
+    this.transaction(() => {
+      this.db
+        .prepare('INSERT INTO runs VALUES (?,?)')
+        .run(saved.id, JSON.stringify(saved));
+      this.db
+        .prepare(
+          'INSERT INTO attribution(id,entity,user_id,blind) VALUES (?,?,?,?)',
+        )
+        .run(saved.id, 'run', actor, Number(blind));
+      this.assign(saved.id, actor);
+      if (!blind) this.reveal(saved.id, actor);
+    });
     return saved;
   }
-  listRuns(): Run[] {
-    return this.db
-      .prepare('SELECT body FROM runs ORDER BY rowid DESC LIMIT 100')
-      .all()
-      .map((r) => JSON.parse(String(r.body)));
+  getRun(id: string): Run {
+    this.attribution(id);
+    const r = this.db.prepare('SELECT body FROM runs WHERE id=?').get(id);
+    if (!r) throw new StoreError(404, '実行結果が見つかりません。');
+    return JSON.parse(String(r.body));
   }
-  saveExperiment(title: string, query: Query) {
+  private runIds() {
+    return this.db
+      .prepare('SELECT id FROM runs ORDER BY rowid DESC LIMIT 100')
+      .all()
+      .map((r) => String(r.id));
+  }
+  listRuns(actor = this.actor()) {
+    return this.runIds()
+      .filter((id) => this.revealed(id, actor))
+      .map((id) => {
+        this.reveal(id, actor);
+        return this.getRun(id);
+      });
+  }
+  listSummaries(actor: string): RunSummary[] {
+    this.actor(actor);
+    return this.runIds().map((id) => {
+      const r = this.getRun(id);
+      return {
+        id,
+        title: r.title,
+        createdAt: r.createdAt,
+        executedByUserId: this.attribution(id).userId,
+        exposure: this.exposure(id, actor),
+        revealed: this.revealed(id, actor),
+        finalized: this.revisions(id, actor).length > 0,
+      };
+    });
+  }
+  saveExperiment(title: string, query: Query, actor = this.actor()) {
     const saved = {
       id: randomUUID(),
       title,
       query,
       createdAt: new Date().toISOString(),
     };
-    this.db
-      .prepare('INSERT INTO experiments VALUES (?,?)')
-      .run(saved.id, JSON.stringify(saved));
-    return saved;
+    this.transaction(() => {
+      this.db
+        .prepare('INSERT INTO experiments VALUES (?,?)')
+        .run(saved.id, JSON.stringify(saved));
+      this.db
+        .prepare('INSERT INTO attribution(id,entity,user_id) VALUES (?,?,?)')
+        .run(saved.id, 'experiment', this.actor(actor));
+    });
+    return { ...saved, createdByUserId: actor };
   }
   listExperiments() {
     return this.db
-      .prepare('SELECT body FROM experiments ORDER BY rowid DESC LIMIT 100')
+      .prepare('SELECT id,body FROM experiments ORDER BY rowid DESC LIMIT 100')
       .all()
+      .map((r) => ({
+        ...JSON.parse(String(r.body)),
+        createdByUserId: this.attribution(String(r.id), 'experiment').userId,
+      }));
+  }
+  assign(id: string, actor: string) {
+    this.getRun(id);
+    this.actor(actor);
+    this.db
+      .prepare('INSERT OR IGNORE INTO assignments VALUES (?,?)')
+      .run(id, actor);
+  }
+  assignments(id: string) {
+    return this.db
+      .prepare(
+        'SELECT u.id AS userId,u.name FROM assignments a JOIN users u ON u.id=a.user_id WHERE a.run_id=? ORDER BY a.rowid',
+      )
+      .all(id)
+      .map((r) => ({
+        userId: String(r.userId),
+        name: String(r.name),
+        finalized: this.revisions(id, String(r.userId)).length > 0,
+      }));
+  }
+  exposure(id: string, actor: string): 'blind' | 'exposed' | 'unknown' {
+    if (
+      this.db
+        .prepare('SELECT 1 FROM exposures WHERE run_id=? AND user_id=?')
+        .get(id, actor)
+    )
+      return 'exposed';
+    const attr = this.attribution(id);
+    return attr.userId === legacy ? 'unknown' : 'blind';
+  }
+  revealed(id: string, actor: string) {
+    return this.exposure(id, actor) === 'exposed';
+  }
+  reveal(id: string, actor: string) {
+    this.assign(id, actor);
+    this.db
+      .prepare('INSERT OR IGNORE INTO exposures VALUES (?,?,?)')
+      .run(id, actor, new Date().toISOString());
+    return this.getRun(id);
+  }
+  revisions(id: string, actor?: string): Revision[] {
+    return this.db
+      .prepare(
+        `SELECT body FROM revisions WHERE run_id=? AND kind='individual' ${actor ? 'AND user_id=?' : ''} ORDER BY rowid`,
+      )
+      .all(...(actor ? [id, actor] : [id]))
       .map((r) => JSON.parse(String(r.body)));
+  }
+  labeling(id: string, actor: string): Labeling {
+    this.assign(id, actor);
+    const { response: _, ...run } = this.getRun(id);
+    const r = this.db
+      .prepare('SELECT body FROM annotations WHERE run_id=? AND user_id=?')
+      .get(id, actor);
+    return {
+      run,
+      draft: r ? JSON.parse(String(r.body)) : emptyDraft(),
+      revisions: this.revisions(id, actor),
+      exposure: this.exposure(id, actor),
+      revealed: this.revealed(id, actor),
+      assignments: this.assignments(id),
+      executedByUserId: this.attribution(id).userId,
+    };
+  }
+  saveDraft(id: string, actor: string, draft: Draft) {
+    this.assign(id, actor);
+    try {
+      validateLabels(this.getRun(id).query, draft.labels);
+    } catch {
+      throw new StoreError(400, '正解ラベルを確認してください。');
+    }
+    this.db
+      .prepare(
+        'INSERT INTO annotations VALUES (?,?,?) ON CONFLICT(run_id,user_id) DO UPDATE SET body=excluded.body',
+      )
+      .run(id, actor, JSON.stringify(draft));
+    return this.labeling(id, actor);
+  }
+  finalize(id: string, actor: string, draft: Draft) {
+    try {
+      validateLabels(this.getRun(id).query, draft.labels, true);
+    } catch {
+      throw new StoreError(400, 'すべての質問へ正解ラベルを付けてください。');
+    }
+    return this.transaction(() => {
+      this.saveDraft(id, actor, draft);
+      const revision: Revision = {
+        ...draft,
+        id: randomUUID(),
+        runId: id,
+        userId: actor,
+        createdAt: new Date().toISOString(),
+        exposure: this.exposure(id, actor),
+        kind: 'individual',
+        sourceRevisionIds: [],
+      };
+      this.db
+        .prepare('INSERT INTO revisions VALUES (?,?,?,?,?)')
+        .run(revision.id, id, actor, 'individual', JSON.stringify(revision));
+      this.reveal(id, actor);
+      return {
+        run: this.getRun(id),
+        revisions: this.revisions(id, actor),
+        exposure: this.exposure(id, actor),
+      };
+    });
+  }
+  evaluation(id: string, actor: string) {
+    this.actor(actor);
+    if (!this.revealed(id, actor))
+      throw new StoreError(403, 'ラベルを確定してから回答を公開してください。');
+    return {
+      run: this.getRun(id),
+      revisions: this.revisions(id, actor),
+      exposure: this.exposure(id, actor),
+    };
+  }
+  comparison(id: string, actor: string) {
+    this.actor(actor);
+    const assigned = this.assignments(id);
+    if (
+      !assigned.some((a) => a.userId === actor) ||
+      assigned.some((a) => !a.finalized)
+    )
+      throw new StoreError(409, '割り当てた全評価者の確定をお待ちください。');
+    const revisions = assigned.map((a) => this.revisions(id, a.userId).at(-1)!);
+    const references = this.db
+      .prepare(
+        "SELECT body FROM revisions WHERE run_id=? AND kind='reference' ORDER BY rowid",
+      )
+      .all(id)
+      .map((r) => JSON.parse(String(r.body)) as Revision);
+    return { revisions, references };
+  }
+  adopt(id: string, actor: string, draft: Draft, sourceIds: string[]) {
+    return this.transaction(() => {
+      const comparison = this.comparison(id, actor);
+      const expected = comparison.revisions.map((r) => r.id).sort();
+      if (JSON.stringify([...sourceIds].sort()) !== JSON.stringify(expected))
+        throw new StoreError(
+          409,
+          '比較結果が更新されました。再読み込みしてください。',
+        );
+      try {
+        validateLabels(this.getRun(id).query, draft.labels, true);
+      } catch {
+        throw new StoreError(400, '採用ラベルをすべて入力してください。');
+      }
+      const revision: Revision = {
+        ...draft,
+        id: randomUUID(),
+        runId: id,
+        userId: actor,
+        createdAt: new Date().toISOString(),
+        exposure: 'exposed',
+        kind: 'reference',
+        sourceRevisionIds: sourceIds,
+      };
+      this.db
+        .prepare('INSERT INTO revisions VALUES (?,?,?,?,?)')
+        .run(revision.id, id, actor, 'reference', JSON.stringify(revision));
+      return revision;
+    });
   }
   close() {
     this.db.close();

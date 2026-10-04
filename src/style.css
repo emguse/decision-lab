@@ -589,3 +589,112 @@ pre {
     grid-template-columns: minmax(65px, 0.65fr) minmax(0, 1.5fr) 28px;
   }
 }
+.identity-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 24px;
+  background: #e5ecdd;
+  border-bottom: 1px solid #c9d6bd;
+  position: relative;
+  z-index: 1;
+}
+.identity-bar label {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.identity-bar input {
+  max-width: 200px;
+}
+.identity-bar small {
+  color: #66775d;
+  font-size: 10px;
+}
+.workspace-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.workspace-tabs button[aria-pressed='true'] {
+  background: #344d3b;
+  color: white;
+}
+.blind-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.blind-toggle input {
+  width: auto;
+  margin: 0;
+}
+.yes-no {
+  display: flex;
+  gap: 20px;
+}
+.yes-no label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.yes-no input {
+  width: auto;
+  margin: 0;
+}
+.instructions {
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+.state-snapshot {
+  white-space: pre-wrap;
+}
+.progress {
+  margin-right: auto;
+}
+.table-scroll {
+  overflow: auto;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  margin: 16px 0;
+}
+th,
+td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid #e0e5d9;
+}
+th {
+  color: #6c815e;
+}
+.grading-settings {
+  display: flex;
+  gap: 12px;
+}
+.grading-settings input {
+  max-width: 130px;
+}
+.comparison {
+  border-top: 1px solid #dce2d5;
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.panel select {
+  max-width: 100%;
+}
+.panel .question select {
+  width: 100%;
+  display: block;
+  margin-top: 8px;
+}
+label > input[type='checkbox'] {
+  display: inline-block;
+  width: auto;
+  margin-right: 8px;
+}

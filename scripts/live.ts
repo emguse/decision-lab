@@ -7,7 +7,7 @@ if (!process.env.TYPESAFE_API_KEY) {
   console.error('Set TYPESAFE_API_KEY in .env before running this paid test.');
   process.exit(1);
 }
-const store = new Store(process.env.DATABASE_PATH || 'data/jev.sqlite');
+const store = await Store.open(process.env.DATABASE_PATH || 'data/jev.sqlite');
 try {
   const app = createApp(
     store,

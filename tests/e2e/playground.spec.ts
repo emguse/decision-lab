@@ -1,56 +1,7 @@
+import { mockApi } from './mock';
 import { test, expect } from '@playwright/test';
 test('edit, invalid JSON, execute, save and reload', async ({ page }) => {
-  let runs: unknown[] = [];
-  let experiments: unknown[] = [];
-  await page.route('**/api/**', async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    const body =
-      route.request().method() === 'POST'
-        ? route.request().postDataJSON()
-        : null;
-    let response: unknown = [];
-    if (path === '/api/config') response = { configured: true };
-    if (path === '/api/runs') {
-      if (body) {
-        const run = {
-          ...body,
-          id: 'run-1',
-          createdAt: new Date().toISOString(),
-          elapsedMs: 123,
-          response: {
-            model: 'jev-test',
-            answers: {
-              is_urgent: { type: 'noul', noul: 0.95 },
-              department: {
-                type: 'choice',
-                choice: 'billing',
-                confidence: 0.8,
-                probabilities: { billing: 0.9, technical: 0.05, sales: 0.05 },
-              },
-              frustration: {
-                type: 'score',
-                score: 1.5,
-                confidence: 0.3,
-                probabilities: { '0': 0.1, '1': 0.3, '2': 0.6 },
-                legend: { '0': 'Calm', '1': 'Frustrated', '2': 'Very angry' },
-              },
-            },
-            usage: { input_tokens: 120, output_tokens: 4 },
-          },
-        };
-        runs = [run];
-        response = run;
-      } else response = runs;
-    }
-    if (path === '/api/experiments') {
-      if (body) {
-        const e = { ...body, id: 'exp-1', createdAt: new Date().toISOString() };
-        experiments = [e];
-        response = e;
-      } else response = experiments;
-    }
-    await route.fulfill({ json: response });
-  });
+  await mockApi(page);
   await page.goto('/');
   await page
     .getByLabel('入力テキスト', { exact: true })
@@ -65,6 +16,7 @@ test('edit, invalid JSON, execute, save and reload', async ({ page }) => {
   await expect(page.getByLabel('入力テキスト', { exact: true })).toHaveValue(
     'Payments failed',
   );
+  await page.getByLabel('ブラインド実行（ラベル確定まで回答を隠す）').uncheck();
   await page.getByRole('button', { name: '判断を実行' }).click();
   await expect(page.getByText('P(Yes) 95.0%')).toBeVisible();
   await page.getByRole('button', { name: '実験を保存' }).click();
@@ -76,17 +28,7 @@ test('edit, invalid JSON, execute, save and reload', async ({ page }) => {
   );
 });
 test('API errors preserve the draft', async ({ page }) => {
-  await page.route('**/api/**', (route) =>
-    route.fulfill({
-      status: route.request().method() === 'POST' ? 429 : 200,
-      json:
-        route.request().method() === 'POST'
-          ? { error: 'レート制限に達しました。' }
-          : route.request().url().endsWith('/config')
-            ? { configured: true }
-            : [],
-    }),
-  );
+  await mockApi(page, { failure: true });
   await page.goto('/');
   await page
     .getByLabel('入力テキスト', { exact: true })
@@ -101,13 +43,7 @@ test('API errors preserve the draft', async ({ page }) => {
 test('criteria rows add, remove, validate and round-trip through JSON', async ({
   page,
 }) => {
-  await page.route('**/api/**', (route) =>
-    route.fulfill({
-      json: route.request().url().endsWith('/config')
-        ? { configured: true }
-        : [],
-    }),
-  );
+  await mockApi(page);
   await page.goto('/');
   await page.getByLabel('評価基準 department キー 1').fill('finance');
   await page
