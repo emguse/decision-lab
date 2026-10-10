@@ -1,0 +1,20 @@
+version = 1
+
+# Start llama-server separately with --host 127.0.0.1 --port 8080 --alias clef.
+[[connections]]
+id = "clef-local"
+label = "Local · Clef (llama.cpp)"
+adapter = "llamacpp"
+endpoint = "http://127.0.0.1:8080/v1/systemone"
+model = "clef"
+timeout_ms = 60000
+question_interaction = "joint"
+
+# HTTPS example; replace endpoint/model with your service's values.
+# [[connections]]
+# id = "custom-systemone"
+# label = "Custom System One"
+# adapter = "systemone"
+# endpoint = "https://example.com/v1/systemone"
+# model = "your-model"
+# api_key_env = "CUSTOM_SYSTEMONE_API_KEY"

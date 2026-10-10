@@ -1,5 +1,7 @@
+import { z } from 'zod';
 import {
   executionMetadataSchema,
+  providerIdSchema,
   type ExecutionMetadata,
   type ProviderId,
 } from '../shared/providers.js';
@@ -257,8 +259,12 @@ export class Store {
         .prepare('INSERT INTO attribution(id,entity,user_id) VALUES (?,?,?)')
         .run(saved.id, 'experiment', this.actor(actor));
       this.db
-        .prepare('INSERT INTO experiment_metadata VALUES (?,?,1)')
-        .run(saved.id, provider);
+        .prepare('INSERT INTO experiment_metadata VALUES (?,?,?)')
+        .run(
+          saved.id,
+          provider,
+          ['jev', 'strands-local'].includes(provider) ? 1 : 2,
+        );
     });
     return { ...saved, createdByUserId: actor, provider };
   }
@@ -268,11 +274,16 @@ export class Store {
         'SELECT provider,format_version FROM experiment_metadata WHERE experiment_id=?',
       )
       .get(id);
-    if (meta && Number(meta.format_version) !== 1)
+    if (meta && ![1, 2].includes(Number(meta.format_version)))
       throw new StoreError(409, '保存形式が未対応です。');
-    return meta
-      ? executionMetadataSchema.shape.provider.parse(meta.provider)
-      : 'jev';
+    if (!meta) return 'jev';
+    const parsed = (
+      Number(meta.format_version) === 1
+        ? z.enum(['jev', 'strands-local'])
+        : providerIdSchema
+    ).safeParse(meta.provider);
+    if (!parsed.success) throw new StoreError(409, '保存形式が未対応です。');
+    return parsed.data;
   }
   listExperiments() {
     return this.db

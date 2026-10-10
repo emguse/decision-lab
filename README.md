@@ -49,7 +49,7 @@ The server uses Node's built-in SQLite (`node:sqlite`); the database defaults to
 
 Requests go to `POST https://api.typesafe.ai/v1/systemone` with server-side Bearer authentication. Each execution makes one request, with a 60-second timeout and no automatic retries. Concurrent executions are rejected. A timed-out request may still incur provider usage. If local persistence fails after a successful API call, execution reports an error; rerunning makes another paid request.
 
-The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for trusted local users, not public hosting. Draft saves do not call the provider. Clef, image input, AI drafting, and batch evaluation are future extensions. Local Strands inference runs through a separate Python HTTP server. The current evaluation release labels already saved single-query results without another model request.
+The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for trusted local users, not public hosting. Draft saves do not call the provider. Image input, AI drafting, and batch evaluation are future extensions. Text/JSON Clef connections are available through TOML settings. Local Strands inference runs through a separate Python HTTP server. The current evaluation release labels already saved single-query results without another model request.
 
 ## Local users and blind evaluation
 
@@ -148,3 +148,78 @@ This updates the Python project's dependency and lockfile; Decision Lab does not
 ## License
 
 Decision Lab is licensed under the [MIT License](LICENSE), copyright 2026 emguse and contributors. Third-party dependencies, the installed TypeSafe skill, and separately installed model/runtime components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Strands Decider, its v19 adapter/head, and the Qwen3.5 base model are Apache-2.0, not covered by this application's MIT grant.
+
+## TOML System One connections
+
+Copy `systemone.example.toml` to `systemone.toml`, edit it, and restart Node/Hono.
+Alternatively set `SYSTEMONE_CONFIG_PATH` to a file path (relative paths use the
+process working directory). Without a default file, existing Jev and Strands
+settings work unchanged. An explicit missing file, unknown fields, duplicate or
+reserved IDs (`jev`, `strands-local`), or invalid values prevent startup. Config
+errors omit source lines and endpoints. TOML is loaded once; there is no hot reload.
+
+Each `[[connections]]` defines `id` (lowercase letters/digits/hyphens, starting with
+a letter, at most 64 characters), `label`, `adapter` (`llamacpp` or `systemone`),
+`endpoint` (the complete POST URL), and default `model`. Optional `timeout_ms`
+defaults to 60000 (range 100–600000). Optional `api_key_env` names a server-side
+Bearer key environment variable; never put keys directly in TOML. Keys are never
+inherited from Jev. Missing required credentials leave the connection unconfigured.
+`question_interaction` is `independent`, `joint`, or `unknown` (default); this is
+operator-supplied metadata, not a discovered model property. Use `joint` for Clef.
+Local HTTP requires an explicit `127.0.0.1` or `[::1]` origin and `/v1/systemone`.
+Other services require HTTPS. Redirects, embedded URL credentials, query strings,
+and fragments are rejected. Never reference `TYPESAFE_API_KEY` for a local service.
+HTTPS services must implement the [System One contract](https://docs.typesafe.ai/api)
+and Bearer authentication when enabled; arbitrary custom authentication is not supported.
+
+### Clef with llama.cpp v0.6.0
+
+Install llama.cpp and obtain a compatible Clef GGUF separately, following upstream
+instructions and the selected model's license. No model or runtime is bundled.
+Start a text-only instance, replacing the model path and choosing a batch size that
+fits your model/input and available memory:
+
+```sh
+llama-server --model /path/to/clef.gguf --alias clef --host 127.0.0.1 --port 8080 --ubatch-size 4096 --batch-size 4096
+```
+
+The example TOML uses model alias `clef` and port 8080. The app checks `/health` and
+`/v1/models`, requiring the alias and `decisions` output modality before execution.
+Older runtimes without that metadata cannot pass this adapter's readiness check.
+Clef's full prompt must fit in `--ubatch-size`; 4096 is an example, not a guarantee
+for every input. See the [v0.6.0 server documentation](https://github.com/ggml-org/llama.cpp/blob/v0.6.0/tools/server/README.md).
+This app supports text/JSON only; no image-upload feature is included. Clef jointly
+judges questions in one request, so changing one question can affect other answers.
+No per-question splitting or semantic criteria conversion is performed. Structured
+Score legends are preserved and displayed as JSON.
+
+Generic `systemone` connections allow model editing and report configuration
+readiness only: there is no universal health endpoint and the app does not make a
+paid probe. A configured connection is not proof that its service is reachable.
+The app never automatically retries or falls back to another provider.
+
+Execution metadata format 2 snapshots the connection ID, label, adapter, question
+interaction and requested/returned models. Original responses remain separate from
+normalized answers and absent usage remains unavailable. Schema 3 and legacy JSON
+remain unchanged; format 1 runs continue to load. Custom experiment metadata uses
+format 2. Older application releases cannot read these new records. If a connection
+is removed, saved records remain readable; execution requires an explicit new
+selection. Reopening a fixed-model connection uses the current configured alias
+without changing its stored snapshot. Token accounting and confidence are
+provider-specific and must not be treated as universal billing or accuracy scores.
+Browser tests use an isolated Vite server on loopback port 5175 and mock all API
+requests; an occupied test port causes failure instead of reusing another app.
+Automated tests use mock services. On 2026-10-10, the user reported successful
+inference with llama.cpp v0.6.0 and cached `ggml-org/Clef-Flash-GGUF:Q4_K_M`
+through router mode. The initial request was cancelled after about 60 seconds
+while the model was loading; the connection timeout was increased to 300000 ms.
+This confirms basic operation for that setup, not Japanese accuracy, a latency
+benchmark, memory consumption, or overflow behavior.
+
+When starting `llama serve` without a model, router mode uses the published
+`/v1/models` IDs; `--alias clef` on the router does not rename its cached models.
+For this setup, use `model = "ggml-org/Clef-Flash-GGUF:Q4_K_M"` in TOML.
+Set `timeout_ms = 300000` if cold loading exceeds the default 60 seconds and
+restart Node/Hono after editing the file. Router readiness checks confirm the
+model ID and decision capability; they do not force model loading. The first
+inference request can therefore take longer than subsequent requests.

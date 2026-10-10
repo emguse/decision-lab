@@ -53,7 +53,9 @@ export function ResultView({ result }: { result: Run }) {
             <div className="probability" key={key}>
               <div>
                 <span>
-                  {a.type === 'score' ? `${key} · ${a.legend[key]}` : key}
+                  {a.type === 'score'
+                    ? `${key} · ${typeof a.legend[key] === 'string' ? a.legend[key] : JSON.stringify(a.legend[key])}`
+                    : key}
                 </span>
                 <strong>{(p * 100).toFixed(1)}%</strong>
               </div>

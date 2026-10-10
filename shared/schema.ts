@@ -72,7 +72,7 @@ export const responseSchema = z
             score: z.number().finite(),
             confidence: probability,
             probabilities,
-            legend: z.record(z.string(), z.string()),
+            legend: z.record(z.string(), content),
           })
           .passthrough(),
       ]),

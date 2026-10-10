@@ -5,6 +5,7 @@ import { requestSchema } from '../shared/schema.js';
 import { ProviderError, type DecisionProvider } from './provider.js';
 import { SCHEMA_VERSION, StoreError, type Store } from './store.js';
 import { providerIdSchema } from '../shared/providers.js';
+import type { SystemOneProvider } from './systemone-provider.js';
 import type { LocalDecisionProvider } from './local-provider.js';
 import { draftSchema } from '../shared/evaluation.js';
 export function createApp(
@@ -12,8 +13,14 @@ export function createApp(
   provider: DecisionProvider,
   configured: boolean,
   local?: LocalDecisionProvider,
+  connections: SystemOneProvider[] = [],
 ) {
-  const providers = { jev: provider, 'strands-local': local };
+  const providers = new Map<string, DecisionProvider | undefined>([
+    ['jev', provider],
+    ['strands-local', local],
+  ]);
+  for (const connection of connections)
+    providers.set(connection.connection.id, connection);
   const app = new Hono();
   app.use('/api/*', async (c, next) => {
     const host = c.req.header('host');
@@ -54,19 +61,49 @@ export function createApp(
       configured,
       provider: 'jev',
       providers: {
-        jev: { configured, model: 'jev-latest' },
+        jev: {
+          configured,
+          model: 'jev-latest',
+          label: 'Jev API',
+          modelEditable: true,
+          healthCheck: false,
+          questionInteraction: 'independent',
+        },
         'strands-local': {
+          label: 'Local · Strands Decider',
+          modelEditable: false,
+          healthCheck: true,
+          questionInteraction: 'independent',
           configured: local?.configured ?? false,
           model: local?.model ?? 'StrandsAgents/strands-decider-2B-hobson-v19',
         },
+        ...Object.fromEntries(
+          connections.map((p) => [
+            p.connection.id,
+            {
+              configured: p.configured,
+              model: p.connection.model,
+              label: p.connection.label,
+              modelEditable: p.connection.adapter !== 'llamacpp',
+              healthCheck: p.connection.adapter === 'llamacpp',
+              questionInteraction: p.connection.question_interaction,
+            },
+          ]),
+        ),
       },
       schemaVersion: SCHEMA_VERSION,
       recordFormatVersion: 1,
     }),
   );
-  app.get('/api/providers/strands-local/health', async (c) =>
-    c.json(local ? await local.health() : { status: 'unconfigured' }),
-  );
+  app.get('/api/providers/:id/health', async (c) => {
+    const id = c.req.param('id');
+    if (id === 'strands-local')
+      return c.json(local ? await local.health() : { status: 'unconfigured' });
+    const selected = connections.find((p) => p.connection.id === id);
+    if (!selected)
+      return c.json({ error: '接続先が登録されていません。' }, 404);
+    return c.json(await selected.health());
+  });
   const actor = (c: { req: { header(name: string): string | undefined } }) =>
     store.actor(c.req.header('X-Local-User'));
   app.get('/api/local-users', (c) =>
@@ -143,12 +180,15 @@ export function createApp(
   app.post('/api/runs', async (c) => {
     const userId = actor(c);
     const v = input.parse(await c.req.json());
-    const selected = providers[v.provider];
+    const selected = providers.get(v.provider);
+    const connection = connections.find(
+      (p) => p.connection.id === v.provider,
+    )?.connection;
     if (!selected)
       throw new ProviderError(
         503,
-        'local_not_configured',
-        'ローカルPythonサーバーの接続先を設定してください。',
+        'not_configured',
+        '接続先が未設定または削除されています。明示的に接続先を選択してください。',
       );
     if (running)
       return c.json(
@@ -171,8 +211,18 @@ export function createApp(
         userId,
         v.blind ?? false,
         {
-          formatVersion: 1,
-          provider: v.provider,
+          ...(connection
+            ? {
+                formatVersion: 2 as const,
+                label: connection.label,
+                adapter: connection.adapter,
+                questionInteraction: connection.question_interaction,
+                provider: v.provider,
+              }
+            : {
+                formatVersion: 1 as const,
+                provider: v.provider as 'jev' | 'strands-local',
+              }),
           requestedModel: v.query.model,
           resolvedModel: response.model,
           artifactRevision: null,
