@@ -1,3 +1,5 @@
+import { SystemOneProvider } from '../../server/systemone-provider';
+import { parseConnections } from '../../server/connections';
 import { LocalDecisionProvider } from '../../server/local-provider';
 import { LOCAL_MODEL } from '../../shared/providers';
 import type { Page } from '@playwright/test';
@@ -8,6 +10,7 @@ import { fixture } from '../fixture';
 export async function mockApi(
   page: Page,
   options: {
+    connections?: boolean;
     failure?: boolean;
     delay?: number;
     local?: boolean;
@@ -71,6 +74,43 @@ export async function mockApi(
     },
     options.jevConfigured ?? true,
     local,
+    options.connections
+      ? parseConnections(`version = 1
+[[connections]]
+id = "clef-local"
+label = "Clef test"
+adapter = "llamacpp"
+endpoint = "http://127.0.0.1:8080/v1/systemone"
+model = "clef"
+question_interaction = "joint"
+[[connections]]
+id = "custom"
+label = "Custom test"
+adapter = "systemone"
+endpoint = "https://example.com/api"
+model = "custom-default"
+`).map(
+          (c) =>
+            new SystemOneProvider(c, undefined, async (url, init) => {
+              if (String(url).endsWith('/health'))
+                return Response.json({ status: 'ok' });
+              if (String(url).endsWith('/v1/models'))
+                return Response.json({
+                  data: [
+                    {
+                      id: 'clef',
+                      architecture: { output_modalities: ['decisions'] },
+                    },
+                  ],
+                });
+              localCalls++;
+              return Response.json({
+                ...fixture,
+                model: JSON.parse(String(init?.body)).model,
+              });
+            }),
+        )
+      : [],
   );
   const bodies: { path: string; body: unknown; user: string | undefined }[] =
     [];
@@ -78,9 +118,16 @@ export async function mockApi(
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const reqBody = request.postData() ?? undefined;
-    const response = await app.request(request.url(), {
+    // Production API accepts the application ports; this test runs an isolated Vite port.
+    const headers: Record<string, string> = {
+      ...request.headers(),
+      host: '127.0.0.1:5173',
+    };
+    if (headers.origin === new URL(request.url()).origin)
+      headers.origin = 'http://127.0.0.1:5173';
+    const response = await app.request(`http://127.0.0.1:5173${path}`, {
       method: request.method(),
-      headers: request.headers(),
+      headers,
       body: reqBody,
     });
     const body = await response.json();

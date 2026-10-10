@@ -18,6 +18,7 @@ import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
 import {
   LOCAL_MODEL,
+  providerIdSchema,
   type ProviderId,
   type ProviderHealth,
   type AppConfig,
@@ -52,15 +53,23 @@ function App({
   );
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
   const [blind, setBlind] = useState(true);
-  const [provider, setProvider] = useState<ProviderId>(() =>
-    localStorage.getItem('decisionProvider') === 'strands-local'
-      ? 'strands-local'
-      : 'jev',
+  const [provider, setProvider] = useState<ProviderId>(
+    () =>
+      providerIdSchema.safeParse(localStorage.getItem('decisionProvider'))
+        .data ?? 'jev',
   );
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [health, setHealth] = useState<ProviderHealth | null>(null);
   const [checking, setChecking] = useState(false);
-  const jevModel = useRef('jev-latest');
+  const models = useRef(new Map<string, string>([['jev', 'jev-latest']]));
+  const configLoaded = useRef(false);
+  const healthGeneration = useRef(0);
+  const selectedConfig =
+    config && Object.hasOwn(config.providers, provider)
+      ? config.providers[provider]
+      : undefined;
+  const modelEditable = selectedConfig?.modelEditable ?? provider === 'jev';
+  const canCheck = selectedConfig?.healthCheck ?? provider === 'strands-local';
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -112,30 +121,41 @@ function App({
     setConfigured(c.configured);
     setConfig(c);
     if (
-      provider === 'strands-local' &&
-      query.model === LOCAL_MODEL &&
-      c.providers['strands-local'].model !== LOCAL_MODEL
+      !configLoaded.current &&
+      Object.hasOwn(c.providers, provider) &&
+      provider !== 'jev'
     )
-      update({ ...query, model: c.providers['strands-local'].model });
+      update({ ...query, model: c.providers[provider].model });
+    configLoaded.current = true;
   }
   useEffect(() => {
     refresh().catch((e) => setError(e.message));
   }, []);
   async function checkLocal() {
+    const generation = ++healthGeneration.current;
+    const selected = provider;
     setChecking(true);
     try {
-      setHealth(
-        await request<ProviderHealth>('providers/strands-local/health'),
+      const result = await request<ProviderHealth>(
+        `providers/${selected}/health`,
       );
+      if (generation === healthGeneration.current) setHealth(result);
     } catch {
-      setHealth({ status: 'unreachable' });
+      if (generation === healthGeneration.current)
+        setHealth({ status: 'unreachable' });
     } finally {
-      setChecking(false);
+      if (generation === healthGeneration.current) setChecking(false);
     }
   }
   useEffect(() => {
-    if (provider === 'strands-local') void checkLocal();
-  }, [provider]);
+    ++healthGeneration.current;
+    setHealth(null);
+    setChecking(false);
+    if (canCheck) void checkLocal();
+    return () => {
+      ++healthGeneration.current;
+    };
+  }, [provider, canCheck]);
   function chooseProvider(next: ProviderId, q?: Query) {
     if (!q && fieldError) {
       setError('フォームの入力を修正してから接続先を切り替えてください。');
@@ -146,15 +166,21 @@ function App({
       setError('JSONを修正してから接続先を切り替えてください。');
       return;
     }
-    if (!q && provider === 'jev') jevModel.current = current.model;
+    ++healthGeneration.current;
+    if (!q) models.current.set(provider, current.model);
     setProvider(next);
     localStorage.setItem('decisionProvider', next);
     update({
       ...current,
-      model:
-        next === 'strands-local'
-          ? (config?.providers['strands-local'].model ?? LOCAL_MODEL)
-          : (q?.model ?? jevModel.current),
+      model: q
+        ? config?.providers[next]?.modelEditable === false
+          ? config.providers[next].model
+          : q.model
+        : config?.providers[next]?.modelEditable === false
+          ? config.providers[next].model
+          : (models.current.get(next) ??
+            config?.providers[next]?.model ??
+            initialQuery.model),
     });
     setResult(null);
     setError('');
@@ -336,18 +362,16 @@ function App({
                   <p>入力と質問を組み立て、モデルの判断を確率で確かめる。</p>
                 </div>
                 <div
-                  className={`status ${(provider === 'strands-local' ? health?.status === 'ready' : configured) ? 'ready' : ''}`}
+                  className={`status ${(canCheck ? health?.status === 'ready' : selectedConfig?.configured) ? 'ready' : ''}`}
                 >
                   ●{' '}
-                  {provider === 'strands-local'
+                  {canCheck
                     ? health?.status === 'ready'
-                      ? 'LOCAL READY'
-                      : 'LOCAL 未接続'
-                    : configured === null
-                      ? '接続確認中'
-                      : configured
-                        ? 'API KEY READY'
-                        : 'API KEY 未設定'}
+                      ? '接続確認済み'
+                      : '未接続'
+                    : selectedConfig?.configured
+                      ? '設定済み・接続未確認'
+                      : '未設定'}
                 </div>
               </header>
               {provider === 'jev' && configured === false && (
@@ -368,17 +392,22 @@ function App({
                       chooseProvider(e.target.value as ProviderId)
                     }
                   >
-                    <option value="jev">Jev API</option>
-                    <option value="strands-local">
-                      Local · Strands Decider
-                    </option>
+                    {config &&
+                      Object.entries(config.providers).map(([id, value]) => (
+                        <option key={id} value={id}>
+                          {value.label ?? id}
+                        </option>
+                      ))}
+                    {!selectedConfig && (
+                      <option value={provider}>{provider}（未登録）</option>
+                    )}
                   </select>
                 </label>
-                {provider === 'strands-local' && (
+                {canCheck && (
                   <>
                     <p>
-                      ローカルモデル：
-                      {config?.providers['strands-local'].model ?? LOCAL_MODEL}
+                      設定モデル：
+                      {selectedConfig?.model}
                     </p>
                     <button
                       disabled={checking || busy}
@@ -388,18 +417,36 @@ function App({
                     </button>
                     <p role="status">
                       {health?.status === 'ready'
-                        ? `接続済み · ${health.model} · ${health.device}`
+                        ? `接続済み · ${health.model}${health.device ? ` · ${health.device}` : ''}`
                         : health?.status === 'mismatch'
-                          ? 'モデル不一致：Pythonサーバーと設定を確認してください。'
+                          ? 'モデル不一致：サーバーと設定を確認してください。'
                           : health?.status === 'unconfigured'
-                            ? 'LOCAL_DECISION_BASE_URL を設定してください。'
-                            : 'Pythonサーバーを起動して接続を確認してください。'}
+                            ? provider === 'strands-local'
+                              ? 'LOCAL_DECISION_BASE_URL を設定してください。'
+                              : 'サーバー側の接続設定を確認してください。'
+                            : '推論サーバーを起動して接続を確認してください。'}
                     </p>
                     <p className="hint">
-                      モデルはPython側でロードします。Score基準は文字列、Choiceは2択以上です。
-                      長い入力の切り詰め拒否は未確認です。精度評価前にランタイムの対応を確認してください。
+                      {provider === 'strands-local'
+                        ? 'モデルはPython側でロードします。Score基準は文字列、Choiceは2択以上です。長い入力の切り詰め拒否は未確認です。'
+                        : 'モデルは llama.cpp 側でロードします。プロンプト全体が実行時のバッチに収まる必要があります。'}
                     </p>
                   </>
+                )}
+                {!selectedConfig && (
+                  <p role="status">
+                    この接続先は削除されています。再実行するには接続先を選択してください。
+                  </p>
+                )}
+                {selectedConfig?.questionInteraction === 'joint' && (
+                  <p className="hint">
+                    この接続では、同じリクエスト内の質問を共同で判断します。質問同士は独立ではありません。
+                  </p>
+                )}
+                {selectedConfig?.questionInteraction === 'unknown' && (
+                  <p className="hint">
+                    この接続先の質問間の独立性は未確認です。
+                  </p>
                 )}
               </div>
               <label className="blind-toggle">
@@ -440,9 +487,7 @@ function App({
                   disabled={
                     fieldError ||
                     busy ||
-                    (provider === 'jev'
-                      ? !configured
-                      : !config?.providers['strands-local'].configured) ||
+                    !selectedConfig?.configured ||
                     !jsonValid ||
                     !valid.success ||
                     !title.trim()
@@ -506,7 +551,7 @@ function App({
                     モデル
                     <input
                       aria-label="モデル"
-                      readOnly={provider === 'strands-local'}
+                      readOnly={!modelEditable}
                       value={query.model}
                       onChange={(e) =>
                         update({ ...query, model: e.target.value })
