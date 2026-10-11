@@ -1,3 +1,4 @@
+import { displayUserName } from './user-name';
 import React, {
   createContext,
   useContext,
@@ -16,8 +17,12 @@ import {
 import './style.css';
 import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
+import { SuitesWorkspace } from './Suites';
+import type { HelpTopic } from './Help';
+const Help = React.lazy(() =>
+  import('./Help').then((module) => ({ default: module.Help })),
+);
 import {
-  LOCAL_MODEL,
   providerIdSchema,
   type ProviderId,
   type ProviderHealth,
@@ -48,9 +53,19 @@ function App({
 }) {
   const request = <T,>(path: string, body?: unknown, method = 'POST') =>
     api<T>(path, body, method, user.id);
-  const [workspace, setWorkspace] = useState<'playground' | 'evaluation'>(
-    'playground',
-  );
+  const [workspace, setWorkspace] = useState<
+    'playground' | 'evaluation' | 'suites'
+  >('playground');
+  const [helpTopic, setHelpTopic] = useState<HelpTopic | null>(null);
+  const helpScroll = useRef(0);
+  const [navigationError, setNavigationError] = useState('');
+  const [suiteExecutionId, setSuiteExecutionId] = useState('');
+  const [suiteOrigin, setSuiteOrigin] = useState<{
+    suiteId: string;
+    executionId: string;
+    caseId: string;
+  } | null>(null);
+  const [suiteId, setSuiteId] = useState<string | null>(null);
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
   const [blind, setBlind] = useState(true);
   const [provider, setProvider] = useState<ProviderId>(
@@ -69,7 +84,7 @@ function App({
       ? config.providers[provider]
       : undefined;
   const modelEditable = selectedConfig?.modelEditable ?? provider === 'jev';
-  const canCheck = selectedConfig?.healthCheck ?? provider === 'strands-local';
+  const canCheck = selectedConfig?.healthCheck ?? false;
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -83,16 +98,16 @@ function App({
   );
   const [query, setQuery] = useState<Query>(() => ({
       ...initialQuery,
-      model: provider === 'strands-local' ? LOCAL_MODEL : initialQuery.model,
+      model: initialQuery.model,
     })),
     [json, setJson] = useState(() =>
       pretty({
         ...initialQuery,
-        model: provider === 'strands-local' ? LOCAL_MODEL : initialQuery.model,
+        model: initialQuery.model,
       }),
     ),
     [mode, setMode] = useState<'form' | 'json'>('form');
-  const [title, setTitle] = useState('サポート依頼のトリアージ'),
+  const [title, setTitle] = useState('Support request triage'),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
@@ -158,12 +173,12 @@ function App({
   }, [provider, canCheck]);
   function chooseProvider(next: ProviderId, q?: Query) {
     if (!q && fieldError) {
-      setError('フォームの入力を修正してから接続先を切り替えてください。');
+      setError('Fix the form input before switching connections.');
       return;
     }
     const current = q ?? (mode === 'json' ? parseJson() : query);
     if (!current) {
-      setError('JSONを修正してから接続先を切り替えてください。');
+      setError('Fix the JSON before switching connections.');
       return;
     }
     ++healthGeneration.current;
@@ -191,14 +206,26 @@ function App({
     setNotice('');
   }
   async function navigate(fn: () => void) {
+    setNavigationError('');
     try {
       await beforeSwitch.current?.();
+      setHelpTopic(null);
       fn();
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : '下書きを保存できませんでした。',
+      setNavigationError(
+        e instanceof Error ? e.message : 'Could not save the label draft.',
       );
     }
+  }
+  async function openHelp(topic: HelpTopic) {
+    await navigate(() => {
+      if (!helpTopic) helpScroll.current = window.scrollY;
+      setHelpTopic(topic);
+    });
+  }
+  function closeHelp() {
+    setHelpTopic(null);
+    requestAnimationFrame(() => window.scrollTo({ top: helpScroll.current }));
   }
   function load(q: Query, t: string, next: ProviderId) {
     chooseProvider(next, q);
@@ -209,7 +236,7 @@ function App({
     if (lock.current || fieldError) return;
     const q = mode === 'json' ? parseJson() : valid.success ? valid.data : null;
     if (!q) {
-      setError('クエリの形式を確認してください。');
+      setError('Check the request format.');
       return;
     }
     lock.current = true;
@@ -224,15 +251,16 @@ function App({
         blind: kind === 'runs' ? blind : undefined,
       });
       if (kind === 'runs') {
+        setSuiteOrigin(null);
         if (blind) {
           setResult(null);
           setEvaluationId((saved as Labeling).run.id);
           setWorkspace('evaluation');
         } else setResult(saved as Run);
-      } else setNotice('実験を保存しました。');
+      } else setNotice('Experiment saved.');
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '処理に失敗しました。');
+      setError(e instanceof Error ? e.message : 'The operation failed.');
     } finally {
       lock.current = false;
       setBusy(false);
@@ -256,10 +284,10 @@ function App({
           </a>
           <div className="workspace">◉ &nbsp; LOCAL WORKSPACE</div>
           <h2>
-            保存した実験 <span>{experiments.length}</span>
+            Saved experiments <span>{experiments.length}</span>
           </h2>
           {experiments.length === 0 && (
-            <p className="muted">実験を保存すると、ここから再利用できます。</p>
+            <p className="muted">Save an experiment to reuse it here.</p>
           )}
           {experiments.map((e) => (
             <button
@@ -274,17 +302,16 @@ function App({
             >
               {e.title}
               <small>
-                {users.find((u) => u.id === e.createdByUserId)?.name ??
-                  '作成者不明'}{' '}
-                · {new Date(e.createdAt).toLocaleString('ja-JP')}
+                {displayUserName(users.find((u) => u.id === e.createdByUserId))}{' '}
+                · {new Date(e.createdAt).toLocaleString('en-US')}
               </small>
             </button>
           ))}
           <h2>
-            実行履歴 <span>{runs.length}</span>
+            Run history <span>{runs.length}</span>
           </h2>
           {runs.length === 0 && (
-            <p className="muted">最初の判断を実行してみましょう。</p>
+            <p className="muted">Run your first decision.</p>
           )}
           {runs.map((r) => (
             <button
@@ -293,6 +320,7 @@ function App({
               onClick={() => {
                 void navigate(() => {
                   setResult(null);
+                  setSuiteOrigin(null);
                   setEvaluationId(r.id);
                   setWorkspace('evaluation');
                 });
@@ -300,8 +328,8 @@ function App({
             >
               {r.title}
               <small>
-                {r.finalized ? 'ラベル確定済み' : 'ラベル未確定'} ·{' '}
-                {r.exposure === 'blind' ? '回答非公開' : '閲覧済み／不明'}
+                {r.finalized ? 'Labels finalized' : 'Labels not finalized'} ·{' '}
+                {r.exposure === 'blind' ? 'Answers hidden' : 'Viewed / unknown'}
               </small>
             </button>
           ))}
@@ -310,407 +338,467 @@ function App({
             <br />
             Ideas into decisions.
             <p>
-              <a href="https://github.com/emguse/decision-lab/blob/main/LICENSE">
+              <button
+                className="footer-link"
+                onClick={() => void openHelp('license')}
+              >
                 MIT License
-              </a>
+              </button>
               {' · '}
-              <a href="https://github.com/emguse/decision-lab/blob/main/THIRD_PARTY_NOTICES.md">
+              <button
+                className="footer-link"
+                onClick={() => void openHelp('notices')}
+              >
                 Third-party notices
-              </a>
+              </button>
             </p>
           </footer>
         </aside>
         <main>
           <div className="workspace-tabs">
             <button
-              aria-pressed={workspace === 'playground'}
+              aria-pressed={!helpTopic && workspace === 'playground'}
               onClick={() => void navigate(() => setWorkspace('playground'))}
             >
               Playground
             </button>
             <button
-              aria-pressed={workspace === 'evaluation'}
-              onClick={() => {
-                setResult(null);
-                setWorkspace('evaluation');
-              }}
+              aria-pressed={!helpTopic && workspace === 'evaluation'}
+              onClick={() =>
+                void navigate(() => {
+                  setResult(null);
+                  setWorkspace('evaluation');
+                })
+              }
             >
               Evaluation
             </button>
+            <button
+              aria-pressed={!helpTopic && workspace === 'suites'}
+              onClick={() => void navigate(() => setWorkspace('suites'))}
+            >
+              Suites
+            </button>
+            <button
+              aria-pressed={helpTopic !== null}
+              onClick={() => void openHelp('guide')}
+            >
+              Help
+            </button>
           </div>
-          {workspace === 'evaluation' ? (
-            <EvaluationWorkspace
-              key={evaluationId ?? 'none'}
-              runId={evaluationId}
-              user={user}
-              users={users}
-              beforeSwitch={beforeSwitch}
-              onCopy={(q, t, p) =>
-                void navigate(() => {
-                  load(q, t, p ?? 'jev');
-                  setWorkspace('playground');
-                })
-              }
-              onChanged={refresh}
-            />
-          ) : (
-            <>
-              <header>
-                <div>
-                  <div className="eyebrow">PLAYGROUND / DECISION LAB</div>
-                  <h1>文章は作りません。判断をします。</h1>
-                  <p>入力と質問を組み立て、モデルの判断を確率で確かめる。</p>
-                </div>
-                <div
-                  className={`status ${(canCheck ? health?.status === 'ready' : selectedConfig?.configured) ? 'ready' : ''}`}
-                >
-                  ●{' '}
-                  {canCheck
-                    ? health?.status === 'ready'
-                      ? '接続確認済み'
-                      : '未接続'
-                    : selectedConfig?.configured
-                      ? '設定済み・接続未確認'
-                      : '未設定'}
-                </div>
-              </header>
-              {provider === 'jev' && configured === false && (
-                <div className="setup">
-                  開始するには <code>.env</code> に{' '}
-                  <code>TYPESAFE_API_KEY</code>{' '}
-                  を設定し、サーバーを再起動してください。
-                </div>
-              )}
-              <div className="panel provider-panel">
-                <label>
-                  接続先
-                  <select
-                    aria-label="接続先"
-                    value={provider}
-                    disabled={busy}
-                    onChange={(e) =>
-                      chooseProvider(e.target.value as ProviderId)
-                    }
-                  >
-                    {config &&
-                      Object.entries(config.providers).map(([id, value]) => (
-                        <option key={id} value={id}>
-                          {value.label ?? id}
-                        </option>
-                      ))}
-                    {!selectedConfig && (
-                      <option value={provider}>{provider}（未登録）</option>
-                    )}
-                  </select>
-                </label>
-                {canCheck && (
-                  <>
-                    <p>
-                      設定モデル：
-                      {selectedConfig?.model}
-                    </p>
+          {navigationError && (
+            <div role="alert" className="alert">
+              {navigationError}
+            </div>
+          )}
+          {helpTopic && (
+            <React.Suspense
+              fallback={<p role="status">Loading documentation…</p>}
+            >
+              <Help
+                topic={helpTopic}
+                onTopic={setHelpTopic}
+                onBack={closeHelp}
+              />
+            </React.Suspense>
+          )}
+          <div hidden={helpTopic !== null}>
+            {workspace === 'suites' ? (
+              <SuitesWorkspace
+                user={user}
+                config={config}
+                initialProvider={provider}
+                selectedId={suiteId}
+                executionId={suiteExecutionId}
+                onExecutionSelect={setSuiteExecutionId}
+                onHelp={() => void openHelp('guide')}
+                onSelect={(id) => {
+                  setSuiteId(id);
+                  setSuiteExecutionId('');
+                }}
+                onEvaluate={(id, executionId, caseId) => {
+                  setSuiteOrigin({ suiteId: suiteId!, executionId, caseId });
+                  setSuiteExecutionId(executionId);
+                  setEvaluationId(id);
+                  setWorkspace('evaluation');
+                }}
+                onChanged={refresh}
+              />
+            ) : workspace === 'evaluation' ? (
+              <>
+                {suiteOrigin && (
+                  <div className="panel suite-return">
+                    <span>Suites / Case {suiteOrigin.caseId}</span>
                     <button
-                      disabled={checking || busy}
-                      onClick={() => void checkLocal()}
-                    >
-                      接続を確認
-                    </button>
-                    <p role="status">
-                      {health?.status === 'ready'
-                        ? `接続済み · ${health.model}${health.device ? ` · ${health.device}` : ''}`
-                        : health?.status === 'mismatch'
-                          ? 'モデル不一致：サーバーと設定を確認してください。'
-                          : health?.status === 'unconfigured'
-                            ? provider === 'strands-local'
-                              ? 'LOCAL_DECISION_BASE_URL を設定してください。'
-                              : 'サーバー側の接続設定を確認してください。'
-                            : '推論サーバーを起動して接続を確認してください。'}
-                    </p>
-                    <p className="hint">
-                      {provider === 'strands-local'
-                        ? 'モデルはPython側でロードします。Score基準は文字列、Choiceは2択以上です。長い入力の切り詰め拒否は未確認です。'
-                        : 'モデルは llama.cpp 側でロードします。プロンプト全体が実行時のバッチに収まる必要があります。'}
-                    </p>
-                  </>
-                )}
-                {!selectedConfig && (
-                  <p role="status">
-                    この接続先は削除されています。再実行するには接続先を選択してください。
-                  </p>
-                )}
-                {selectedConfig?.questionInteraction === 'joint' && (
-                  <p className="hint">
-                    この接続では、同じリクエスト内の質問を共同で判断します。質問同士は独立ではありません。
-                  </p>
-                )}
-                {selectedConfig?.questionInteraction === 'unknown' && (
-                  <p className="hint">
-                    この接続先の質問間の独立性は未確認です。
-                  </p>
-                )}
-              </div>
-              <label className="blind-toggle">
-                <input
-                  type="checkbox"
-                  checked={blind}
-                  onChange={(e) => {
-                    setBlind(e.target.checked);
-                    setResult(null);
-                  }}
-                />{' '}
-                ブラインド実行（ラベル確定まで回答を隠す）
-              </label>
-              <div className="toolbar">
-                <label className="title-label">
-                  実験名
-                  <input
-                    aria-label="実験名"
-                    maxLength={120}
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                  />
-                </label>
-                <button
-                  disabled={
-                    fieldError ||
-                    busy ||
-                    !jsonValid ||
-                    !valid.success ||
-                    !title.trim()
-                  }
-                  onClick={() => submit('experiments')}
-                >
-                  実験を保存
-                </button>
-                <button
-                  className="primary"
-                  disabled={
-                    fieldError ||
-                    busy ||
-                    !selectedConfig?.configured ||
-                    !jsonValid ||
-                    !valid.success ||
-                    !title.trim()
-                  }
-                  onClick={() => submit('runs')}
-                >
-                  {busy ? '処理中…' : '判断を実行 ↗'}
-                </button>
-              </div>
-              {error && (
-                <div role="alert" className="alert">
-                  {error}
-                </div>
-              )}
-              {notice && (
-                <div role="status" className="setup">
-                  {notice}
-                </div>
-              )}
-              <div className="columns">
-                <section className="panel editor">
-                  <div className="panel-heading">
-                    <h2>
-                      01 <span>クエリを組み立てる</span>
-                    </h2>
-                    <div className="tabs">
-                      <button
-                        aria-pressed={mode === 'form'}
-                        onClick={() => {
-                          const parsed = parseJson();
-                          if (mode === 'json' && !parsed) {
-                            setError(
-                              'JSON を修正してからフォームへ切り替えてください。',
-                            );
-                            return;
-                          }
-                          if (parsed && mode === 'json') update(parsed);
-                          setMode('form');
-                        }}
-                      >
-                        フォーム
-                      </button>
-                      <button
-                        aria-pressed={mode === 'json'}
-                        onClick={() => {
-                          setJson(pretty(query));
-                          if (fieldError) {
-                            setError(
-                              '無効な入力を修正してから切り替えてください。',
-                            );
-                            return;
-                          }
-                          setMode('json');
-                        }}
-                      >
-                        JSON
-                      </button>
-                    </div>
-                  </div>
-                  <label>
-                    モデル
-                    <input
-                      aria-label="モデル"
-                      readOnly={!modelEditable}
-                      value={query.model}
-                      onChange={(e) =>
-                        update({ ...query, model: e.target.value })
+                      onClick={() =>
+                        void navigate(() => {
+                          setSuiteId(suiteOrigin.suiteId);
+                          setSuiteExecutionId(suiteOrigin.executionId);
+                          setWorkspace('suites');
+                        })
                       }
-                    />
+                    >
+                      Back to suite execution
+                    </button>
+                  </div>
+                )}
+                <EvaluationWorkspace
+                  key={evaluationId ?? 'none'}
+                  runId={evaluationId}
+                  user={user}
+                  users={users}
+                  beforeSwitch={beforeSwitch}
+                  onCopy={(q, t, p) =>
+                    void navigate(() => {
+                      load(q, t, p ?? 'jev');
+                      setWorkspace('playground');
+                    })
+                  }
+                  onChanged={refresh}
+                />
+              </>
+            ) : (
+              <>
+                <header>
+                  <div>
+                    <div className="eyebrow">PLAYGROUND / DECISION LAB</div>
+                    <h1>Make decisions. Explore probabilities.</h1>
+                    <p>
+                      Build input and questions to inspect model judgments and
+                      their probabilities.
+                    </p>
+                  </div>
+                  <div
+                    className={`status ${(canCheck ? health?.status === 'ready' : selectedConfig?.configured) ? 'ready' : ''}`}
+                  >
+                    ●{' '}
+                    {canCheck
+                      ? health?.status === 'ready'
+                        ? 'Connection verified'
+                        : 'Not connected'
+                      : selectedConfig?.configured
+                        ? 'Configured · connection not verified'
+                        : 'Not configured'}
+                  </div>
+                </header>
+                {provider === 'jev' && configured === false && (
+                  <div className="setup">
+                    To get started, set <code>TYPESAFE_API_KEY</code> in{' '}
+                    <code>.env</code> and restart the server.
+                  </div>
+                )}
+                <div className="panel provider-panel">
+                  <label>
+                    Connection
+                    <select
+                      aria-label="Connection"
+                      value={provider}
+                      disabled={busy}
+                      onChange={(e) =>
+                        chooseProvider(e.target.value as ProviderId)
+                      }
+                    >
+                      {config &&
+                        Object.entries(config.providers).map(([id, value]) => (
+                          <option key={id} value={id}>
+                            {value.label ?? id}
+                          </option>
+                        ))}
+                      {!selectedConfig && (
+                        <option value={provider}>
+                          {provider} (not registered)
+                        </option>
+                      )}
+                    </select>
                   </label>
-                  {mode === 'json' ? (
+                  {canCheck && (
                     <>
-                      <label>
-                        送信 JSON
-                        <textarea
-                          className="code"
-                          aria-label="送信 JSON"
-                          rows={24}
-                          value={json}
-                          onChange={(e) => {
-                            setJson(e.target.value);
-                            try {
-                              const q = requestSchema.parse(
-                                JSON.parse(e.target.value),
-                              );
-                              setQuery(q);
-                            } catch {
-                              /* preserve invalid draft */
-                            }
-                          }}
-                        />
-                      </label>
-                      {!jsonValid && (
-                        <p role="alert" className="validation">
-                          JSON
-                          構文またはクエリの形式が無効です。送信できません。
-                        </p>
+                      <p>Configured model: {selectedConfig?.model}</p>
+                      <button
+                        disabled={checking || busy}
+                        onClick={() => void checkLocal()}
+                      >
+                        Check connection
+                      </button>
+                      <p role="status">
+                        {health?.status === 'ready'
+                          ? `Connected · ${health.model}${health.device ? ` · ${health.device}` : ''}`
+                          : health?.status === 'mismatch'
+                            ? 'Model mismatch: check the server and configuration.'
+                            : health?.status === 'unconfigured'
+                              ? 'Check the server-side connection settings.'
+                              : 'Start the inference server and check the connection.'}
+                      </p>
+                      {selectedConfig?.guidance && (
+                        <p className="hint">{selectedConfig.guidance}</p>
                       )}
                     </>
-                  ) : (
-                    <>
-                      <StateEditor
-                        value={query.state}
-                        onChange={(state) => update({ ...query, state })}
-                      />
-                      <div className="section-title">
-                        <h3>
-                          質問{' '}
-                          <span>{Object.keys(query.questions).length}</span>
-                        </h3>
-                        <button onClick={addQuestion}>＋ 質問を追加</button>
-                      </div>
-                      {Object.entries(query.questions).map(([id, q], i) => (
-                        <div className="question" key={id}>
-                          <div className="question-header">
-                            <span className="question-number">
-                              {String(i + 1).padStart(2, '0')}
-                            </span>
-                            <input
-                              aria-label={`質問ID ${i + 1}`}
-                              defaultValue={id}
-                              onBlur={(e) => {
-                                const next = e.target.value.trim();
-                                if (next === id) return;
-                                if (
-                                  !next ||
-                                  Object.hasOwn(query.questions, next)
-                                ) {
-                                  e.target.value = id;
-                                  setError(
-                                    '質問IDは空にせず、重複しない名前にしてください。',
-                                  );
-                                  return;
-                                }
-                                update({
-                                  ...query,
-                                  questions: Object.fromEntries(
-                                    Object.entries(query.questions).map(
-                                      ([key, v]) => [
-                                        key === id ? next : key,
-                                        v,
-                                      ],
-                                    ),
-                                  ),
-                                });
-                              }}
-                            />
-                            <select
-                              aria-label={`質問タイプ ${i + 1}`}
-                              value={q.type}
-                              onChange={(e) => {
-                                const type = e.target.value as Question['type'];
-                                changeQuestion(
-                                  id,
-                                  type === 'noul'
-                                    ? { type, instructions: q.instructions }
-                                    : type === 'choice'
-                                      ? {
-                                          type,
-                                          instructions: q.instructions,
-                                          criteria: {
-                                            option_a: '選択肢 A',
-                                            option_b: '選択肢 B',
-                                          },
-                                        }
-                                      : {
-                                          type,
-                                          instructions: q.instructions,
-                                          criteria: ['低い', '高い'],
-                                        },
-                                );
-                              }}
-                            >
-                              <option value="noul">Noul · Yes / No</option>
-                              <option value="choice">Choice · 選択</option>
-                              <option value="score">Score · 評価</option>
-                            </select>
-                            <button
-                              aria-label={`質問を削除 ${id}`}
-                              onClick={() =>
-                                update({
-                                  ...query,
-                                  questions: Object.fromEntries(
-                                    Object.entries(query.questions).filter(
-                                      ([k]) => k !== id,
-                                    ),
-                                  ),
-                                })
-                              }
-                            >
-                              ×
-                            </button>
-                          </div>
-                          <ContentEditor
-                            label={`質問文 ${id}`}
-                            value={q.instructions}
-                            onChange={(instructions) =>
-                              changeQuestion(id, { ...q, instructions })
+                  )}
+                  {!selectedConfig && (
+                    <p role="status">
+                      This connection was removed. Select a connection to run
+                      again.
+                    </p>
+                  )}
+                  {selectedConfig?.questionInteraction === 'joint' && (
+                    <p className="hint">
+                      This connection judges questions jointly in the same
+                      request. Questions are not independent.
+                    </p>
+                  )}
+                  {selectedConfig?.questionInteraction === 'unknown' && (
+                    <p className="hint">
+                      Question independence is unknown for this connection.
+                    </p>
+                  )}
+                </div>
+                <label className="blind-toggle">
+                  <input
+                    type="checkbox"
+                    checked={blind}
+                    onChange={(e) => {
+                      setBlind(e.target.checked);
+                      setResult(null);
+                    }}
+                  />{' '}
+                  Blind execution (hide answers until labels are finalized)
+                </label>
+                <div className="toolbar">
+                  <label className="title-label">
+                    Experiment name
+                    <input
+                      aria-label="Experiment name"
+                      maxLength={120}
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    disabled={
+                      fieldError ||
+                      busy ||
+                      !jsonValid ||
+                      !valid.success ||
+                      !title.trim()
+                    }
+                    onClick={() => submit('experiments')}
+                  >
+                    Save experiment
+                  </button>
+                  <button
+                    className="primary"
+                    disabled={
+                      fieldError ||
+                      busy ||
+                      !selectedConfig?.configured ||
+                      !jsonValid ||
+                      !valid.success ||
+                      !title.trim()
+                    }
+                    onClick={() => submit('runs')}
+                  >
+                    {busy ? 'Running…' : 'Run decision ↗'}
+                  </button>
+                </div>
+                {error && (
+                  <div role="alert" className="alert">
+                    {error}
+                  </div>
+                )}
+                {notice && (
+                  <div role="status" className="setup">
+                    {notice}
+                  </div>
+                )}
+                <div className="columns">
+                  <section className="panel editor">
+                    <div className="panel-heading">
+                      <h2>
+                        01 <span>Build a request</span>
+                      </h2>
+                      <div className="tabs">
+                        <button
+                          aria-pressed={mode === 'form'}
+                          onClick={() => {
+                            const parsed = parseJson();
+                            if (mode === 'json' && !parsed) {
+                              setError(
+                                'Fix the JSON before switching to the form.',
+                              );
+                              return;
                             }
+                            if (parsed && mode === 'json') update(parsed);
+                            setMode('form');
+                          }}
+                        >
+                          Form
+                        </button>
+                        <button
+                          aria-pressed={mode === 'json'}
+                          onClick={() => {
+                            setJson(pretty(query));
+                            if (fieldError) {
+                              setError(
+                                'Fix invalid input before switching views.',
+                              );
+                              return;
+                            }
+                            setMode('json');
+                          }}
+                        >
+                          JSON
+                        </button>
+                      </div>
+                    </div>
+                    <label>
+                      Model
+                      <input
+                        aria-label="Model"
+                        readOnly={!modelEditable}
+                        value={query.model}
+                        onChange={(e) =>
+                          update({ ...query, model: e.target.value })
+                        }
+                      />
+                    </label>
+                    {mode === 'json' ? (
+                      <>
+                        <label>
+                          Request JSON
+                          <textarea
+                            className="code"
+                            aria-label="Request JSON"
+                            rows={24}
+                            value={json}
+                            onChange={(e) => {
+                              setJson(e.target.value);
+                              try {
+                                const q = requestSchema.parse(
+                                  JSON.parse(e.target.value),
+                                );
+                                setQuery(q);
+                              } catch {
+                                /* preserve invalid draft */
+                              }
+                            }}
                           />
-                          {q.type !== 'noul' && (
-                            <CriteriaEditor
-                              kind={q.type}
-                              label={`評価基準 ${id}`}
-                              value={q.criteria}
-                              onChange={(criteria) => {
-                                const parsed =
-                                  requestSchema.shape.questions.safeParse({
-                                    [id]: { ...q, criteria },
+                        </label>
+                        {!jsonValid && (
+                          <p role="alert" className="validation">
+                            Invalid JSON syntax or request format. Cannot
+                            submit.
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <StateEditor
+                          value={query.state}
+                          onChange={(state) => update({ ...query, state })}
+                        />
+                        <div className="section-title">
+                          <h3>
+                            Questions{' '}
+                            <span>{Object.keys(query.questions).length}</span>
+                          </h3>
+                          <button onClick={addQuestion}>＋ Add question</button>
+                        </div>
+                        {Object.entries(query.questions).map(([id, q], i) => (
+                          <div className="question" key={id}>
+                            <div className="question-header">
+                              <span className="question-number">
+                                {String(i + 1).padStart(2, '0')}
+                              </span>
+                              <input
+                                aria-label={`Question ID ${i + 1}`}
+                                defaultValue={id}
+                                onBlur={(e) => {
+                                  const next = e.target.value.trim();
+                                  if (next === id) return;
+                                  if (
+                                    !next ||
+                                    Object.hasOwn(query.questions, next)
+                                  ) {
+                                    e.target.value = id;
+                                    setError(
+                                      'Question IDs must be nonempty and unique.',
+                                    );
+                                    return;
+                                  }
+                                  update({
+                                    ...query,
+                                    questions: Object.fromEntries(
+                                      Object.entries(query.questions).map(
+                                        ([key, v]) => [
+                                          key === id ? next : key,
+                                          v,
+                                        ],
+                                      ),
+                                    ),
                                   });
-                                if (!parsed.success) return false;
-                                changeQuestion(id, parsed.data[id]);
-                                return true;
-                              }}
+                                }}
+                              />
+                              <select
+                                aria-label={`Question type ${i + 1}`}
+                                value={q.type}
+                                onChange={(e) => {
+                                  const type = e.target
+                                    .value as Question['type'];
+                                  changeQuestion(
+                                    id,
+                                    type === 'noul'
+                                      ? { type, instructions: q.instructions }
+                                      : type === 'choice'
+                                        ? {
+                                            type,
+                                            instructions: q.instructions,
+                                            criteria: {
+                                              option_a: 'Option A',
+                                              option_b: 'Option B',
+                                            },
+                                          }
+                                        : {
+                                            type,
+                                            instructions: q.instructions,
+                                            criteria: ['Low', 'High'],
+                                          },
+                                  );
+                                }}
+                              >
+                                <option value="noul">Noul · Yes / No</option>
+                                <option value="choice">
+                                  Choice · Selection
+                                </option>
+                                <option value="score">Score · Rating</option>
+                              </select>
+                              <button
+                                aria-label={`Remove question ${id}`}
+                                onClick={() =>
+                                  update({
+                                    ...query,
+                                    questions: Object.fromEntries(
+                                      Object.entries(query.questions).filter(
+                                        ([k]) => k !== id,
+                                      ),
+                                    ),
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
+                            </div>
+                            <ContentEditor
+                              label={`Instructions ${id}`}
+                              value={q.instructions}
+                              onChange={(instructions) =>
+                                changeQuestion(id, { ...q, instructions })
+                              }
                             />
-                          )}
-                          {q.type === 'noul' && (
-                            <details>
-                              <summary>Yes / No の基準（任意）</summary>
+                            {q.type !== 'noul' && (
                               <CriteriaEditor
-                                kind="noul"
-                                label={`評価基準 ${id}`}
-                                value={q.criteria ?? { true: '', false: '' }}
+                                kind={q.type}
+                                label={`Criteria ${id}`}
+                                value={q.criteria}
                                 onChange={(criteria) => {
                                   const parsed =
                                     requestSchema.shape.questions.safeParse({
@@ -721,53 +809,74 @@ function App({
                                   return true;
                                 }}
                               />
-                            </details>
-                          )}
-                        </div>
-                      ))}
-                      {!valid.success && (
-                        <p className="validation">
-                          {valid.error.issues.map((i) => i.message).join(' / ')}
-                        </p>
-                      )}
-                    </>
-                  )}
-                </section>
-                <section className="panel results">
-                  <div className="panel-heading">
-                    <h2>
-                      02 <span>判断を読み解く</span>
-                    </h2>
-                    <span className="eyebrow">RESPONSE</span>
-                  </div>
-                  {!result ? (
-                    <div className="empty">
-                      <div className="empty-icon">⌘</div>
-                      <h3>判断が、ここに届きます。</h3>
-                      <p>
-                        質問を用意して「判断を実行」を押すと、
-                        <br />
-                        回答と選択肢ごとの確率を確認できます。
-                      </p>
-                      <div className="legend">
-                        <span>Noul</span>
-                        <span>Choice</span>
-                        <span>Score</span>
-                      </div>
+                            )}
+                            {q.type === 'noul' && (
+                              <details>
+                                <summary>Yes / No criteria (optional)</summary>
+                                <CriteriaEditor
+                                  kind="noul"
+                                  label={`Criteria ${id}`}
+                                  value={q.criteria ?? { true: '', false: '' }}
+                                  onChange={(criteria) => {
+                                    const parsed =
+                                      requestSchema.shape.questions.safeParse({
+                                        [id]: { ...q, criteria },
+                                      });
+                                    if (!parsed.success) return false;
+                                    changeQuestion(id, parsed.data[id]);
+                                    return true;
+                                  }}
+                                />
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                        {!valid.success && (
+                          <p className="validation">
+                            {valid.error.issues
+                              .map((i) => i.message)
+                              .join(' / ')}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </section>
+                  <section className="panel results">
+                    <div className="panel-heading">
+                      <h2>
+                        02 <span>Explore the decision</span>
+                      </h2>
+                      <span className="eyebrow">RESPONSE</span>
                     </div>
-                  ) : (
-                    <>
-                      <ResultView result={result} />
-                    </>
-                  )}
-                </section>
-              </div>
-              <div className="bottom-note">
-                判断モデル · 自動再試行なし ·
-                入力と実行結果はこの端末に保存されます
-              </div>
-            </>
-          )}
+                    {!result ? (
+                      <div className="empty">
+                        <div className="empty-icon">⌘</div>
+                        <h3>Your decision results appear here.</h3>
+                        <p>
+                          Prepare questions and select Run decision to inspect
+                          <br />
+                          answers and the probability of each option.
+                        </p>
+                        <div className="legend">
+                          <span>Noul</span>
+                          <span>Choice</span>
+                          <span>Score</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <ResultView result={result} />
+                      </>
+                    )}
+                  </section>
+                </div>
+                <div className="bottom-note">
+                  Decision models · No automatic retries · Input and results are
+                  stored locally
+                </div>
+              </>
+            )}
+          </div>
         </main>
       </div>
     </DraftValidity.Provider>
@@ -848,19 +957,19 @@ function CriteriaEditor({
         <h3>{label}</h3>
         <button
           type="button"
-          aria-label={`基準を追加 ${label}`}
+          aria-label={`Add criterion ${label}`}
           disabled={rows.length >= max}
           onClick={add}
         >
-          ＋ 追加
+          ＋ Add
         </button>
       </div>
       {rows.map((row, index) => (
         <div className="criterion-row" key={index}>
           <label>
-            {kind === 'score' ? 'レベル' : 'キー'}
+            {kind === 'score' ? 'Level' : 'key'}
             <input
-              aria-label={`${label} キー ${index + 1}`}
+              aria-label={`${label} key ${index + 1}`}
               value={kind === 'score' ? String(index) : row.key}
               readOnly={kind === 'score' || kind === 'noul'}
               onChange={(e) =>
@@ -873,20 +982,22 @@ function CriteriaEditor({
             />
           </label>
           <label>
-            値
+            value
             {row.value !== null && typeof row.value === 'object' ? (
               <div className="structured-value">
-                <span>構造化データ</span>
+                <span>Structured data</span>
                 <pre>{pretty(row.value)}</pre>
-                <small>JSON モードで編集できます</small>
+                <small>Edit in JSON mode</small>
               </div>
             ) : (
               <textarea
-                aria-label={`${label} 値 ${index + 1}`}
+                aria-label={`${label} value ${index + 1}`}
                 rows={2}
                 value={row.value === null ? '' : String(row.value)}
                 placeholder={
-                  row.value === null ? '説明なし（null）' : '説明を入力'
+                  row.value === null
+                    ? 'No description (null)'
+                    : 'Enter a description'
                 }
                 onChange={(e) =>
                   apply(
@@ -900,7 +1011,7 @@ function CriteriaEditor({
           </label>
           <button
             type="button"
-            aria-label={`基準を削除 ${label} ${index + 1}`}
+            aria-label={`Remove criterion ${label} ${index + 1}`}
             onClick={() => apply(rows.filter((_, i) => i !== index))}
           >
             −
@@ -908,11 +1019,14 @@ function CriteriaEditor({
         </div>
       ))}
       {kind === 'score' && (
-        <p className="hint">低いレベルから順に並べてください（2〜10件）。</p>
+        <p className="hint">
+          Arrange levels from lowest to highest (2–10 levels).
+        </p>
       )}
       {invalid && (
         <p role="alert" className="validation">
-          キーの空欄・重複、または基準の件数を確認してください。修正するまで保存・実行できません。
+          Check empty or duplicate keys and the number of criteria. Saving and
+          execution are blocked until these are valid.
         </p>
       )}
     </div>
@@ -989,7 +1103,7 @@ function JsonField({
       />
       {invalid && (
         <span className="validation">
-          無効な JSON／形式です。直前の有効な値を保持しています。
+          Invalid JSON or value type. The last valid value is retained.
         </span>
       )}
     </label>
@@ -1006,9 +1120,9 @@ function StateEditor({
   return (
     <div>
       <label className="state-label">
-        入力 / State
+        Input / State
         <select
-          aria-label="入力形式"
+          aria-label="Input format"
           value={structured ? 'json' : 'text'}
           onChange={(e) =>
             onChange(
@@ -1016,13 +1130,13 @@ function StateEditor({
             )
           }
         >
-          <option value="text">テキスト</option>
+          <option value="text">Text</option>
           <option value="json">JSON</option>
         </select>
       </label>
       {structured ? (
         <JsonField
-          label="入力 JSON"
+          label="Input JSON"
           value={value}
           onChange={(v) => {
             if (!v || typeof v !== 'object') return false;
@@ -1032,13 +1146,15 @@ function StateEditor({
         />
       ) : (
         <textarea
-          aria-label="入力テキスト"
+          aria-label="Input text"
           rows={5}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
       )}
-      <p className="hint">判断に必要な情報や背景を、ここに入力します。</p>
+      <p className="hint">
+        Enter the information and context needed for the decision.
+      </p>
     </div>
   );
 }
@@ -1073,7 +1189,7 @@ function LocalWorkspace() {
       setUserId(id);
     } catch (e) {
       localStorage.setItem('localUserId', userId);
-      setError(e instanceof Error ? e.message : '切り替えに失敗しました。');
+      setError(e instanceof Error ? e.message : 'Could not switch users.');
     } finally {
       setSwitching(false);
     }
@@ -1106,7 +1222,7 @@ function LocalWorkspace() {
       setName('');
       await change(u.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : '追加に失敗しました。');
+      setError(e instanceof Error ? e.message : 'Could not add the user.');
     }
   }
   const user = users.find((u) => u.id === userId);
@@ -1114,9 +1230,9 @@ function LocalWorkspace() {
     <>
       <div className="identity-bar">
         <label>
-          ローカル利用者{' '}
+          Local user{' '}
           <select
-            aria-label="ローカル利用者"
+            aria-label="Local user"
             value={userId}
             disabled={switching}
             onChange={(e) => void change(e.target.value)}
@@ -1125,22 +1241,24 @@ function LocalWorkspace() {
               .filter((u) => u.kind === 'local')
               .map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.name} · {u.id.slice(0, 6)}
+                  {displayUserName(u)} · {u.id.slice(0, 6)}
                 </option>
               ))}
           </select>
         </label>
         <input
-          aria-label="新しい利用者名"
-          placeholder="新しい利用者名"
+          aria-label="New user name"
+          placeholder="New user name"
           value={name}
           maxLength={80}
           onChange={(e) => setName(e.target.value)}
         />
         <button disabled={!name.trim() || switching} onClick={() => void add()}>
-          利用者を追加
+          Add user
         </button>
-        <small>記録用の識別です。認証・アクセス制御はありません。</small>
+        <small>
+          For attribution only. No authentication or access control.
+        </small>
       </div>
       {error && (
         <div role="alert" className="alert">
@@ -1155,7 +1273,7 @@ function LocalWorkspace() {
           beforeSwitch={beforeSwitch}
         />
       ) : (
-        <p>利用者を読み込んでいます…</p>
+        <p>Loading users…</p>
       )}
     </>
   );

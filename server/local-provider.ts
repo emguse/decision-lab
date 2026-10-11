@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { validateResponse, type Query } from '../shared/schema.js';
-import { LOCAL_MODEL, type ProviderHealth } from '../shared/providers.js';
+import type { ProviderHealth } from '../shared/providers.js';
 import { ProviderError, type DecisionProvider } from './provider.js';
 export function localBaseUrl(value: string) {
   if (!/^http:\/\/(127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?\/?$/.test(value))
@@ -16,7 +16,7 @@ export function localBaseUrl(value: string) {
     url.pathname !== '/' ||
     url.port === '0'
   )
-    throw new Error('LOCAL_DECISION_BASE_URL must be an HTTP loopback origin');
+    throw new Error('Strands endpoint must be an HTTP loopback origin');
   return url.origin;
 }
 const healthSchema = z.object({
@@ -38,17 +38,17 @@ export class LocalDecisionProvider implements DecisionProvider {
   readonly baseUrl?: string;
   constructor(
     url: string | undefined,
-    readonly model = LOCAL_MODEL,
+    readonly model: string,
     private fetcher: typeof fetch = fetch,
     private timeoutMs = 60000,
   ) {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 600000)
-      throw new Error('LOCAL_DECISION_TIMEOUT_MS must be 100–600000');
+      throw new Error('Strands timeout must be 100–600000');
     if (
       model.length > 128 ||
       !/^(?:[A-Za-z0-9_.-]+\/)?[A-Za-z0-9_.-]+$/.test(model)
     )
-      throw new Error('LOCAL_DECISION_MODEL must be a model ID');
+      throw new Error('Strands model must be a model ID');
     this.baseUrl = url ? localBaseUrl(url) : undefined;
   }
   get configured() {
@@ -59,7 +59,7 @@ export class LocalDecisionProvider implements DecisionProvider {
       throw new ProviderError(
         503,
         'local_not_configured',
-        'LOCAL_DECISION_BASE_URL をサーバー側に設定してください。',
+        'Configure a Strands connection in systemone.toml.',
       );
     try {
       return await this.fetcher(this.baseUrl + path, {
@@ -74,8 +74,8 @@ export class LocalDecisionProvider implements DecisionProvider {
         timeout ? 504 : 502,
         timeout ? 'local_timeout' : 'local_unreachable',
         timeout
-          ? 'ローカル推論がタイムアウトしました。Python側で処理が続く可能性があります。'
-          : 'ローカルPythonサーバーに接続できません。起動とポートを確認してください。',
+          ? 'Local inference timed out. Processing may still be running in Python.'
+          : 'Cannot reach the local Python service. Check its process and port.',
       );
     }
   }
@@ -101,20 +101,20 @@ export class LocalDecisionProvider implements DecisionProvider {
       throw new ProviderError(
         422,
         'local_model_mismatch',
-        'ローカルモデルはPythonサーバー起動時に指定します。設定されたモデルIDを使ってください。',
+        'The Python service loads its model at startup. Use the configured model ID.',
       );
     for (const q of Object.values(query.questions)) {
       if (q.type === 'choice' && Object.keys(q.criteria).length < 2)
         throw new ProviderError(
           422,
           'local_capability',
-          'ローカル Choice は2個以上の選択肢が必要です。',
+          'Local Choice requires at least two options.',
         );
       if (q.type === 'score' && q.criteria.some((v) => typeof v !== 'string'))
         throw new ProviderError(
           422,
           'local_capability',
-          '現在の Strands ランタイムでは Score の各基準を文字列にしてください。',
+          'The current Strands runtime requires string descriptions for Score criteria.',
         );
     }
     const health = await this.health();
@@ -123,8 +123,8 @@ export class LocalDecisionProvider implements DecisionProvider {
         503,
         `local_${health.status}`,
         health.status === 'mismatch'
-          ? 'Pythonサーバーのモデルと LOCAL_DECISION_MODEL が一致しません。'
-          : 'ローカルPythonサーバーの接続設定と起動を確認してください。',
+          ? 'The Python service model does not match the configured model ID.'
+          : 'Check the local Python service configuration and process.',
       );
     const response = await this.fetch('/v1/systemone', {
       method: 'POST',
@@ -159,10 +159,10 @@ export class LocalDecisionProvider implements DecisionProvider {
         response.status === 422 ? 422 : 502,
         `local_upstream_${response.status}`,
         criteriaMismatch
-          ? '接続中のPythonランタイムは構造化・nullの基準説明に対応していません。基準を文字列にするか、対応版へ更新してください。入力は保持されています。'
+          ? 'The connected Python runtime does not support structured or null criteria. Use string descriptions or a compatible runtime. Your input is retained.'
           : response.status === 422
-            ? 'ローカルサーバーが入力を拒否しました。入力の長さ・形式とランタイムの対応範囲を確認してください。'
-            : 'ローカル推論に失敗しました。Pythonサーバーのメモリーと状態を確認してください。',
+            ? 'The local service rejected the input. Check its length, format, and runtime compatibility.'
+            : 'Local inference failed. Check the Python service memory and status.',
       );
     }
     try {
@@ -182,7 +182,7 @@ export class LocalDecisionProvider implements DecisionProvider {
       throw new ProviderError(
         502,
         'local_invalid_response',
-        'ローカルサーバーから想定外のレスポンスが返りました。',
+        'The local service returned an unexpected response.',
       );
     }
   }

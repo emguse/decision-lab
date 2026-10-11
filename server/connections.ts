@@ -25,12 +25,9 @@ export function validateEndpoint(value: string) {
 }
 const connectionSchema = z
   .object({
-    id: providerIdSchema.refine(
-      (id) => !['jev', 'strands-local'].includes(id),
-      'Reserved connection ID',
-    ),
+    id: providerIdSchema.refine((id) => id !== 'jev', 'Reserved connection ID'),
     label: z.string().trim().min(1).max(120),
-    adapter: z.enum(['llamacpp', 'systemone']),
+    adapter: z.enum(['llamacpp', 'systemone', 'strands']),
     endpoint: z.string().transform(validateEndpoint),
     model: z.string().trim().min(1).max(128),
     api_key_env: z
@@ -40,11 +37,39 @@ const connectionSchema = z
     timeout_ms: z.number().int().min(100).max(600000).default(60000),
     question_interaction: z
       .enum(['independent', 'joint', 'unknown'])
-      .default('unknown'),
+      .optional(),
   })
   .strict()
+  .transform((v) => ({
+    ...v,
+    question_interaction:
+      v.question_interaction ??
+      (v.adapter === 'strands'
+        ? ('independent' as const)
+        : ('unknown' as const)),
+  }))
   .superRefine((v, ctx) => {
     const url = new URL(v.endpoint);
+    if (v.adapter === 'strands') {
+      if (
+        url.protocol !== 'http:' ||
+        !['127.0.0.1', '[::1]'].includes(url.hostname) ||
+        url.pathname !== '/v1/systemone' ||
+        v.api_key_env !== undefined
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'Strands requires unauthenticated loopback HTTP at /v1/systemone',
+        });
+      if (!/^(?:[A-Za-z0-9_.-]+\/)?[A-Za-z0-9_.-]+$/.test(v.model))
+        ctx.addIssue({ code: 'custom', message: 'Invalid Strands model ID' });
+      if (v.question_interaction !== 'independent')
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Strands requires independent question interaction',
+        });
+    }
     if (v.adapter === 'llamacpp' && url.pathname !== '/v1/systemone')
       ctx.addIssue({
         code: 'custom',
@@ -68,6 +93,9 @@ const configSchema = z
     'Duplicate connection ID',
   );
 export type Connection = z.infer<typeof connectionSchema>;
+export function validateConnection(value: unknown): Connection {
+  return connectionSchema.parse(value);
+}
 export function parseConnections(source: string): Connection[] {
   return configSchema.parse(parse(source, { unsafeKeyBehaviour: 'throw' }))
     .connections;

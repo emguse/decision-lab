@@ -3,28 +3,15 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
 import { JevProvider } from './provider.js';
-import { LocalDecisionProvider } from './local-provider.js';
+import { createConnectionProvider } from './connection-providers.js';
 import { loadConnections } from './connections.js';
-import { SystemOneProvider } from './systemone-provider.js';
 import { Store } from './store.js';
-const connections = loadConnections().map(
-  (c) =>
-    new SystemOneProvider(
-      c,
-      c.api_key_env ? process.env[c.api_key_env] : undefined,
-    ),
-);
+const connections = loadConnections().map((c) => createConnectionProvider(c));
 const store = await Store.open(process.env.DATABASE_PATH || 'data/jev.sqlite');
 const app = createApp(
   store,
   new JevProvider(process.env.TYPESAFE_API_KEY),
   Boolean(process.env.TYPESAFE_API_KEY),
-  new LocalDecisionProvider(
-    process.env.LOCAL_DECISION_BASE_URL,
-    process.env.LOCAL_DECISION_MODEL,
-    fetch,
-    Number(process.env.LOCAL_DECISION_TIMEOUT_MS ?? 60000),
-  ),
   connections,
 );
 app.use('/*', serveStatic({ root: './dist' }));

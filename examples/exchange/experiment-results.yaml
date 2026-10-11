@@ -1,0 +1,196 @@
+kind: experiment-results
+schemaVersion: 1
+exportedAt: 2026-10-11T00:00:00.000Z
+exportedByUserId: example-user
+gradingSelection:
+  source: expected
+  settingsOverride: null
+definition:
+  kind: decision-definition
+  schemaVersion: 1
+  name: knowledge-router
+  version: 1
+  questions:
+    route:
+      type: choice
+      instructions: Which skill should handle the request in `query`?
+      criteria:
+        sql-analysis: Analyze database schemas, tables, relationships, and SQL.
+        document-search: Find information in manuals or other documents.
+        direct-answer: Answer directly when database or document access is unnecessary.
+suite:
+  kind: experiment-suite
+  schemaVersion: 1
+  name: routing-evaluation
+  version: 1
+  definition:
+    name: knowledge-router
+    version: 1
+  cases:
+    - id: q001
+      state:
+        query: テーブル間の関係を調べたい
+        context: 製造業の業務システム
+      expected:
+        route: sql-analysis
+    - id: q002
+      state:
+        query: 装置の保守手順を探したい
+      expected:
+        route: document-search
+  settings:
+    threshold: 0.5
+    tolerance: 0.5
+execution:
+  formatVersion: 1
+  id: example-execution
+  suiteId: example-suite
+  userId: example-user
+  createdAt: 2026-10-11T00:00:00.000Z
+  finishedAt: 2026-10-11T00:00:00.000Z
+  status: completed
+  provider: jev
+  model: example-model-not-a-live-run
+  metadata:
+    requestedModel: example-model-not-a-live-run
+    resolvedModel: example-model-not-a-live-run
+    artifactRevision: null
+    formatVersion: 1
+    provider: jev
+  questionInteraction: independent
+results:
+  - caseId: q001
+    status: succeeded
+    runId: example-run-1
+    attempts:
+      - id: example-attempt-1
+        startedAt: 2026-10-11T00:00:00.000Z
+        finishedAt: 2026-10-11T00:00:00.000Z
+        status: succeeded
+    input:
+      model: example-model-not-a-live-run
+      state:
+        query: テーブル間の関係を調べたい
+        context: 製造業の業務システム
+      questions:
+        route:
+          type: choice
+          instructions: Which skill should handle the request in `query`?
+          criteria:
+            sql-analysis: Analyze database schemas, tables, relationships, and SQL.
+            document-search: Find information in manuals or other documents.
+            direct-answer: Answer directly when database or document access is unnecessary.
+    response:
+      model: example-model-not-a-live-run
+      answers:
+        route:
+          type: choice
+          choice: sql-analysis
+          confidence: 0.9
+          probabilities:
+            sql-analysis: 0.9
+            document-search: 0.05
+            direct-answer: 0.05
+      usage: {}
+    execution:
+      requestedModel: example-model-not-a-live-run
+      resolvedModel: example-model-not-a-live-run
+      artifactRevision: null
+      formatVersion: 1
+      provider: jev
+    createdAt: 2026-10-11T00:00:00.000Z
+    elapsedMs: 100
+    grading:
+      source: expected
+      revisionId: null
+      settings:
+        threshold: 0.5
+        tolerance: 0.5
+      labels:
+        route: sql-analysis
+      rows:
+        - id: route
+          type: choice
+          expected: sql-analysis
+          predicted: sql-analysis
+          error: null
+          pass: true
+      missingLabels: 0
+    modelExposure: exposed
+    expectedSeenAt: 2026-10-11T00:00:00.000Z
+  - caseId: q002
+    status: succeeded
+    runId: example-run-2
+    attempts:
+      - id: example-attempt-2
+        startedAt: 2026-10-11T00:00:00.000Z
+        finishedAt: 2026-10-11T00:00:00.000Z
+        status: succeeded
+    input:
+      model: example-model-not-a-live-run
+      state:
+        query: 装置の保守手順を探したい
+      questions:
+        route:
+          type: choice
+          instructions: Which skill should handle the request in `query`?
+          criteria:
+            sql-analysis: Analyze database schemas, tables, relationships, and SQL.
+            document-search: Find information in manuals or other documents.
+            direct-answer: Answer directly when database or document access is unnecessary.
+    response:
+      model: example-model-not-a-live-run
+      answers:
+        route:
+          type: choice
+          choice: document-search
+          confidence: 0.9
+          probabilities:
+            sql-analysis: 0.05
+            document-search: 0.9
+            direct-answer: 0.05
+      usage: {}
+    execution:
+      requestedModel: example-model-not-a-live-run
+      resolvedModel: example-model-not-a-live-run
+      artifactRevision: null
+      formatVersion: 1
+      provider: jev
+    createdAt: 2026-10-11T00:00:00.000Z
+    elapsedMs: 100
+    grading:
+      source: expected
+      revisionId: null
+      settings:
+        threshold: 0.5
+        tolerance: 0.5
+      labels:
+        route: document-search
+      rows:
+        - id: route
+          type: choice
+          expected: document-search
+          predicted: document-search
+          error: null
+          pass: true
+      missingLabels: 0
+    modelExposure: exposed
+    expectedSeenAt: 2026-10-11T00:00:00.000Z
+summary:
+  noul:
+    correct: 0
+    total: 0
+    accuracy: null
+  choice:
+    correct: 2
+    total: 2
+    accuracy: 1
+  score:
+    correct: 0
+    total: 0
+    accuracy: null
+    mae: null
+  succeededCases: 2
+  failedCases: 0
+  pendingCases: 0
+  missingLabels: 0

@@ -1,0 +1,12 @@
+kind: decision-definition
+schemaVersion: 1
+name: knowledge-router
+version: 1
+questions:
+  route:
+    type: choice
+    instructions: Which skill should handle the request in `query`?
+    criteria:
+      sql-analysis: Analyze database schemas, tables, relationships, and SQL.
+      document-search: Find information in manuals or other documents.
+      direct-answer: Answer directly when database or document access is unnecessary.

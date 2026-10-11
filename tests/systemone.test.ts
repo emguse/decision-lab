@@ -165,7 +165,7 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
   try {
     const p = new SystemOneProvider(connection, undefined, fetcher());
     const cloud = vi.fn(async () => validateResponse(response, query));
-    const app = createApp(store, { evaluate: cloud }, false, undefined, [p]);
+    const app = createApp(store, { evaluate: cloud }, false, [p]);
     const send = (path: string, body: unknown) =>
       app.request(path, {
         method: 'POST',

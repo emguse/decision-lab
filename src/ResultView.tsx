@@ -23,8 +23,8 @@ export function ResultView({ result }: { result: Run }) {
         </div>
       </div>
       <p className="result-caption">
-        実行時の結果 · {result.title} ·{' '}
-        {new Date(result.createdAt).toLocaleString('ja-JP')}
+        Saved run · {result.title} ·{' '}
+        {new Date(result.createdAt).toLocaleString('en-US')}
       </p>
       {Object.entries(result.response.answers).map(([id, a]) => (
         <article className="answer" key={id}>
@@ -41,8 +41,8 @@ export function ResultView({ result }: { result: Run }) {
           </div>
           {a.type !== 'noul' && (
             <p className="muted">
-              Confidence {a.confidence.toFixed(3)} ·
-              分布の集中度（正答率ではありません）
+              Confidence {a.confidence.toFixed(3)} · Distribution concentration
+              (not accuracy)
             </p>
           )}
           {Object.entries(
@@ -67,15 +67,16 @@ export function ResultView({ result }: { result: Run }) {
         </article>
       ))}
       <details className="raw">
-        <summary>生のレスポンス</summary>
+        <summary>Raw response</summary>
         <pre>{pretty(result.rawResponse ?? result.response)}</pre>
       </details>
       <p className="hint">
-        接続先：{result.execution?.provider ?? 'jev'} · モデルの正確な重み版：
-        {result.execution?.artifactRevision ?? '不明'}
+        Connection:{result.execution?.provider ?? 'jev'} · Exact model weight
+        revision:
+        {result.execution?.artifactRevision ?? 'Unknown'}
       </p>
       <details className="raw">
-        <summary>実行時のクエリ</summary>
+        <summary>Saved request</summary>
         <pre>{pretty(result.query)}</pre>
       </details>
     </>

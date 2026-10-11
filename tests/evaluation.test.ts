@@ -136,7 +136,7 @@ it('isolates evaluator drafts/exposure; gates comparison and preserves adoption 
         draft,
         comparison.revisions.map((r) => r.id),
       ),
-    ).toThrow('更新');
+    ).toThrow('Comparison changed');
     const c = s.addUser('Third').id;
     s.assign(r.id, c);
     expect(() => s.comparison(r.id, a)).toThrow();

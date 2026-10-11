@@ -1,8 +1,10 @@
+import { StrandsProvider } from '../server/connection-providers';
+import { validateConnection } from '../server/connections';
 import { it, expect, vi } from 'vitest';
 import { LocalDecisionProvider, localBaseUrl } from '../server/local-provider';
-import { LOCAL_MODEL } from '../shared/providers';
+import { LOCAL_MODEL } from './fixture';
 import { initialQuery, validateResponse } from '../shared/schema';
-import { Store } from '../server/store';
+import { Store, SCHEMA_VERSION } from '../server/store';
 import { createApp } from '../server/app';
 import { fixture } from './fixture';
 const model = LOCAL_MODEL.split('/').at(-1)!;
@@ -108,7 +110,9 @@ it('rejects unsupported criteria and model selection before network I/O', async 
   expect(f).not.toHaveBeenCalled();
 });
 it('handles missing configuration, health failure/mismatch, timeout, redirects, overflow, and invalid responses safely', async () => {
-  expect(await new LocalDecisionProvider(undefined).health()).toEqual({
+  expect(
+    await new LocalDecisionProvider(undefined, LOCAL_MODEL).health(),
+  ).toEqual({
     status: 'unconfigured',
   });
   const badHealth = vi.fn<typeof fetch>(async () =>
@@ -177,12 +181,18 @@ it('executes local without a Jev key, saves provenance, excludes raw answers whi
   const s = new Store(':memory:');
   const f = fetcher();
   const cloud = vi.fn(async () => validateResponse(fixture, initialQuery));
-  const app = createApp(
-    s,
-    { evaluate: cloud },
-    false,
-    new LocalDecisionProvider('http://127.0.0.1:8000', LOCAL_MODEL, f),
-  );
+  const app = createApp(s, { evaluate: cloud }, false, [
+    new StrandsProvider(
+      validateConnection({
+        id: 'strands-local',
+        label: 'Local · Strands Decider',
+        adapter: 'strands',
+        endpoint: 'http://127.0.0.1:8000/v1/systemone',
+        model: LOCAL_MODEL,
+      }),
+      f,
+    ),
+  ]);
   const post = (path: string, body: unknown) =>
     app.request(path, {
       method: 'POST',
@@ -242,12 +252,18 @@ it('shares the execution gate across providers and saves the actor chosen at req
     return Response.json(wire);
   });
   const cloud = vi.fn(async () => validateResponse(fixture, initialQuery));
-  const app = createApp(
-    s,
-    { evaluate: cloud },
-    true,
-    new LocalDecisionProvider('http://127.0.0.1:8000', LOCAL_MODEL, f),
-  );
+  const app = createApp(s, { evaluate: cloud }, true, [
+    new StrandsProvider(
+      validateConnection({
+        id: 'strands-local',
+        label: 'Local · Strands Decider',
+        adapter: 'strands',
+        endpoint: 'http://127.0.0.1:8000/v1/systemone',
+        model: LOCAL_MODEL,
+      }),
+      f,
+    ),
+  ]);
   const send = (provider: string, q = query, user = original) =>
     app.request('/api/runs', {
       method: 'POST',
@@ -294,7 +310,7 @@ it('upgrades schema 2 additively, restores its backup, and rejects future metada
     s.close();
     const db = new DatabaseSync(path);
     db.exec(
-      'DROP TABLE run_metadata; DROP TABLE experiment_metadata; PRAGMA user_version=2;',
+      'DROP TABLE suite_run_links; DROP TABLE suite_executions; DROP TABLE expected_exposures; DROP TABLE exchange_documents; DROP TABLE run_metadata; DROP TABLE experiment_metadata; PRAGMA user_version=2;',
     );
     const body = db.prepare('SELECT body FROM runs').get()!.body;
     const revisions = db.prepare('SELECT body FROM revisions').all();
@@ -310,7 +326,9 @@ it('upgrades schema 2 additively, restores its backup, and rejects future metada
       revisions,
     );
     expect(inspect.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    expect(inspect.prepare('PRAGMA user_version').get()!.user_version).toBe(3);
+    expect(inspect.prepare('PRAGMA user_version').get()!.user_version).toBe(
+      SCHEMA_VERSION,
+    );
     inspect.prepare('INSERT INTO run_metadata VALUES (?,?,NULL)').run(
       run.id,
       JSON.stringify({
@@ -390,7 +408,7 @@ it('explains runtime criteria incompatibility without reflecting upstream input 
     throw new Error('Expected rejection');
   } catch (e) {
     expect(e).toMatchObject({ code: 'local_upstream_422' });
-    expect((e as Error).message).toContain('構造化・null');
+    expect((e as Error).message).toContain('structured or null');
     expect((e as Error).message).not.toContain('private');
   }
 });

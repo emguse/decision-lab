@@ -1,16 +1,35 @@
 import { z } from 'zod';
 import { validateResponse, type Query } from '../shared/schema.js';
 import type { ProviderHealth } from '../shared/providers.js';
-import { ProviderError, type DecisionProvider } from './provider.js';
+import { ProviderError, type ConfiguredDecisionProvider } from './provider.js';
 import type { Connection } from './connections.js';
-export class SystemOneProvider implements DecisionProvider {
+export class SystemOneProvider implements ConfiguredDecisionProvider {
   readonly configured: boolean;
   constructor(
     readonly connection: Connection,
     private key?: string,
     private fetcher: typeof fetch = fetch,
   ) {
+    if (connection.adapter === 'strands')
+      throw new Error('Use the Strands adapter');
     this.configured = !connection.api_key_env || Boolean(key);
+  }
+  get config() {
+    return {
+      configured: this.configured,
+      model: this.connection.model,
+      adapter: this.connection.adapter,
+      label: this.connection.label,
+      modelEditable: this.connection.adapter === 'systemone',
+      healthCheck: this.connection.adapter === 'llamacpp',
+      questionInteraction: this.connection.question_interaction,
+      ...(this.connection.adapter === 'llamacpp'
+        ? {
+            guidance:
+              'Load the model in llama.cpp. The entire prompt must fit in the runtime batch.',
+          }
+        : {}),
+    };
   }
   private async request(
     url: string,
@@ -21,7 +40,7 @@ export class SystemOneProvider implements DecisionProvider {
       throw new ProviderError(
         503,
         'not_configured',
-        '接続先の認証情報をサーバー側に設定してください。',
+        'Set connection credentials on the server.',
       );
     try {
       return await this.fetcher(url, {
@@ -40,9 +59,7 @@ export class SystemOneProvider implements DecisionProvider {
       throw new ProviderError(
         timeout ? 504 : 502,
         timeout ? 'timeout' : 'network_error',
-        timeout
-          ? '接続先がタイムアウトしました。'
-          : '接続先に到達できませんでした。',
+        timeout ? 'Connection timed out.' : 'Could not reach the connection.',
       );
     }
   }
@@ -87,14 +104,14 @@ export class SystemOneProvider implements DecisionProvider {
         throw new ProviderError(
           422,
           'model_mismatch',
-          '設定されたモデルIDを使用してください。',
+          'Use the configured model ID.',
         );
       const health = await this.health();
       if (health.status !== 'ready')
         throw new ProviderError(
           503,
           'model_unavailable',
-          'モデルと decision API の対応を確認してください。',
+          'Check the model and decision API compatibility.',
         );
     }
     const response = await this.request(this.connection.endpoint, {
@@ -109,7 +126,7 @@ export class SystemOneProvider implements DecisionProvider {
             ? 422
             : 502,
         `upstream_${response.status}`,
-        `接続先が要求を受け付けませんでした (${response.status})。`,
+        `The connection rejected the request (${response.status})。`,
       );
     try {
       const raw: unknown = await response.json();
@@ -128,7 +145,7 @@ export class SystemOneProvider implements DecisionProvider {
       throw new ProviderError(
         502,
         'invalid_response',
-        '接続先から想定外の回答が返りました。',
+        'The connection returned an unexpected response.',
       );
     }
   }

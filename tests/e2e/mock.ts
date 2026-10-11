@@ -1,7 +1,8 @@
 import { SystemOneProvider } from '../../server/systemone-provider';
 import { parseConnections } from '../../server/connections';
-import { LocalDecisionProvider } from '../../server/local-provider';
-import { LOCAL_MODEL } from '../../shared/providers';
+import { StrandsProvider } from '../../server/connection-providers';
+import { validateConnection } from '../../server/connections';
+import { LOCAL_MODEL } from '../fixture';
 import type { Page } from '@playwright/test';
 import { Store } from '../../server/store';
 import { createApp } from '../../server/app';
@@ -15,6 +16,7 @@ export async function mockApi(
     delay?: number;
     local?: boolean;
     localModel?: string;
+    localId?: string;
     localFailure?: boolean;
     jevConfigured?: boolean;
   } = {},
@@ -24,9 +26,14 @@ export async function mockApi(
   let localCalls = 0;
   const localModel = options.localModel ?? LOCAL_MODEL;
   const local = options.local
-    ? new LocalDecisionProvider(
-        'http://127.0.0.1:8000',
-        localModel,
+    ? new StrandsProvider(
+        validateConnection({
+          id: options.localId ?? 'strands-local',
+          label: 'Local · Strands Decider',
+          adapter: 'strands',
+          endpoint: 'http://127.0.0.1:8000/v1/systemone',
+          model: localModel,
+        }),
         async (url) => {
           if (String(url).endsWith('/health'))
             return Response.json({
@@ -58,7 +65,7 @@ export async function mockApi(
           throw new (await import('../../server/provider')).ProviderError(
             429,
             'rate',
-            'レート制限に達しました。',
+            'Rate limit reached. Wait before trying again.',
           );
         return validateResponse(
           {
@@ -73,9 +80,10 @@ export async function mockApi(
       },
     },
     options.jevConfigured ?? true,
-    local,
-    options.connections
-      ? parseConnections(`version = 1
+    [
+      ...(local ? [local] : []),
+      ...(options.connections
+        ? parseConnections(`version = 1
 [[connections]]
 id = "clef-local"
 label = "Clef test"
@@ -90,27 +98,28 @@ adapter = "systemone"
 endpoint = "https://example.com/api"
 model = "custom-default"
 `).map(
-          (c) =>
-            new SystemOneProvider(c, undefined, async (url, init) => {
-              if (String(url).endsWith('/health'))
-                return Response.json({ status: 'ok' });
-              if (String(url).endsWith('/v1/models'))
+            (c) =>
+              new SystemOneProvider(c, undefined, async (url, init) => {
+                if (String(url).endsWith('/health'))
+                  return Response.json({ status: 'ok' });
+                if (String(url).endsWith('/v1/models'))
+                  return Response.json({
+                    data: [
+                      {
+                        id: 'clef',
+                        architecture: { output_modalities: ['decisions'] },
+                      },
+                    ],
+                  });
+                localCalls++;
                 return Response.json({
-                  data: [
-                    {
-                      id: 'clef',
-                      architecture: { output_modalities: ['decisions'] },
-                    },
-                  ],
+                  ...fixture,
+                  model: JSON.parse(String(init?.body)).model,
                 });
-              localCalls++;
-              return Response.json({
-                ...fixture,
-                model: JSON.parse(String(init?.body)).model,
-              });
-            }),
-        )
-      : [],
+              }),
+          )
+        : []),
+    ],
   );
   const bodies: { path: string; body: unknown; user: string | undefined }[] =
     [];
