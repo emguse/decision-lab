@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateResponse, type Query } from '../shared/schema.js';
+import { validateResponse, type DecisionInput } from '../shared/schema.js';
 import type { ProviderHealth } from '../shared/providers.js';
 import { ProviderError, type ConfiguredDecisionProvider } from './provider.js';
 import type { Connection } from './connections.js';
@@ -98,7 +98,13 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
       return { status: 'unreachable' };
     }
   }
-  async evaluate(query: Query) {
+  async evaluate(query: DecisionInput) {
+    if (query.images?.length)
+      throw new ProviderError(
+        422,
+        'images_unsupported',
+        'This connection does not support images.',
+      );
     if (this.connection.adapter === 'llamacpp') {
       if (query.model !== this.connection.model)
         throw new ProviderError(

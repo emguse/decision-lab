@@ -15,6 +15,7 @@ export async function mockApi(
     failure?: boolean;
     delay?: number;
     local?: boolean;
+    vision?: boolean;
     localModel?: string;
     localId?: string;
     localFailure?: boolean;
@@ -38,6 +39,7 @@ export async function mockApi(
           if (String(url).endsWith('/health'))
             return Response.json({
               status: 'ok',
+              vision: options.vision,
               model: localModel.split('/').at(-1),
               device: 'mps',
               max_length: 4096,
@@ -126,7 +128,7 @@ model = "custom-default"
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    const reqBody = request.postData() ?? undefined;
+    const reqBody = request.postDataBuffer() ?? undefined;
     // Production API accepts the application ports; this test runs an isolated Vite port.
     const headers: Record<string, string> = {
       ...request.headers(),
@@ -137,8 +139,16 @@ model = "custom-default"
     const response = await app.request(`http://127.0.0.1:5173${path}`, {
       method: request.method(),
       headers,
-      body: reqBody,
+      body: reqBody ? new Uint8Array(reqBody) : undefined,
     });
+    if (response.headers.get('content-type')?.startsWith('image/')) {
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
+      return;
+    }
     const body = await response.json();
     bodies.push({ path, body, user: request.headers()['x-local-user'] });
     await route.fulfill({ status: response.status, json: body });

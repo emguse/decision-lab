@@ -1,8 +1,10 @@
+import { ImageGallery } from './Images';
 import type { Run } from '../shared/schema';
 const pretty = (v: unknown) => JSON.stringify(v, null, 2);
 export function ResultView({ result }: { result: Run }) {
   return (
     <>
+      <ImageGallery ids={result.query.imageIds} />
       <div className="metrics">
         <div>
           <small>MODEL</small>

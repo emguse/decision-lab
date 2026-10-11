@@ -129,7 +129,7 @@ The example TOML uses model alias `clef` and port 8080. The app checks `/health`
 Older runtimes without that metadata cannot pass this adapter's readiness check.
 Clef's full prompt must fit in `--ubatch-size`; 4096 is an example, not a guarantee
 for every input. See the [v0.6.0 server documentation](https://github.com/ggml-org/llama.cpp/blob/v0.6.0/tools/server/README.md).
-This app supports text/JSON only; no image-upload feature is included. Clef jointly
+The current Clef connection supports text/JSON only; image attachments are supported through the Strands connection. Clef jointly
 judges questions in one request, so changing one question can affect other answers.
 No per-question splitting or semantic criteria conversion is performed. Structured
 Score legends are preserved and displayed as JSON.
@@ -176,3 +176,37 @@ through router mode. The initial request was cancelled after about 60 seconds
 while the model was loading; the connection timeout was increased to 300000 ms.
 This confirms basic operation for that setup, not Japanese accuracy, a latency
 benchmark, memory consumption, or overflow behavior.
+
+## Strands image inference
+
+Images require the Qwen3.5-based `StrandsAgents/strands-decider-2B-qwen3.5-v1-2610` model and a runtime with the vision path. The inspected source revision is `0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534`; its [vision contract](https://github.com/strands-labs/strands-decider/blob/0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534/docs/vision.md) and [server](https://github.com/strands-labs/strands-decider/blob/0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534/src/strands_decider/server.py) report `vision` in health and accept a top-level Base64 `images` array. The user confirmed image execution and result display with this source pin on 2026-10-11. This confirmation does not establish general model accuracy or measured runtime performance.
+
+Prepare a separate Python virtual environment, then install the pinned source with its vision extra:
+
+```sh
+uv pip install 'strands-decider[vision] @ git+https://github.com/strands-labs/strands-decider.git@0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534' 'transformers>=5.18,<6'
+strands-decider serve --help
+strands-decider serve StrandsAgents/strands-decider-2B-qwen3.5-v1-2610 \
+  --vision --strict-window --device mps --host 127.0.0.1 --port 8012
+```
+
+Confirm the CLI exposes these options, then confirm `/health` reports the configured model and `vision: true` before an image run. Vision requires transformers 5.18 or later and uses torch devices MPS, CPU, or CUDA; MLX is unsupported. Select the device appropriate to your separately managed environment. The vision tower adds memory overhead; measure cold/warm runtime and memory on the target machine. Model/base weights are downloaded by the Python runtime, outside npm and the application UI.
+
+The application forwards images only to a configured Strands loopback endpoint, without Jev credentials or redirects. It refuses unsupported connections and absent/false vision capability, with no automatic fallback. Strict-window overflow and upstream failures retain the editor input but create no successful saved Run. Existing text requests do not require the `vision` health field.
+
+At the time of verification, PyPI published only `strands-decider 0.1.0`, whose extras are `train` and `dev`; it does not contain the vision path. Installing `strands-decider[vision]` from PyPI alone does not enable images. Quote the requirement in zsh to prevent `[vision]` being interpreted as a filename pattern.
+
+For a uv project, merge the following requirements into the existing `[project].dependencies` list and add the pinned source, then run `uv sync`. The user verified this project configuration:
+
+```toml
+[project]
+dependencies = [
+    "strands-decider[vision]",
+    "transformers>=5.18,<6",
+]
+
+[tool.uv.sources]
+strands-decider = { git = "https://github.com/strands-labs/strands-decider.git", rev = "0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534" }
+```
+
+Use `uv run strands-decider serve ...` to launch from that project's managed environment. Its Python dependencies and lockfile belong to the separate runtime project, not this Node application.

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateResponse, type Query } from '../shared/schema.js';
+import { validateResponse, type DecisionInput } from '../shared/schema.js';
 import type { ProviderHealth } from '../shared/providers.js';
 import { ProviderError, type DecisionProvider } from './provider.js';
 export function localBaseUrl(value: string) {
@@ -33,6 +33,7 @@ const healthSchema = z.object({
     .max(128)
     .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   max_length: z.number().int().positive(),
+  vision: z.boolean().optional(),
 });
 export class LocalDecisionProvider implements DecisionProvider {
   readonly baseUrl?: string;
@@ -91,12 +92,13 @@ export class LocalDecisionProvider implements DecisionProvider {
         baseModel: v.base_model,
         device: v.device,
         maxLength: v.max_length,
+        vision: v.vision,
       };
     } catch {
       return { status: 'unreachable' };
     }
   }
-  async evaluate(query: Query) {
+  async evaluate(query: DecisionInput) {
     if (query.model !== this.model)
       throw new ProviderError(
         422,
@@ -126,10 +128,26 @@ export class LocalDecisionProvider implements DecisionProvider {
           ? 'The Python service model does not match the configured model ID.'
           : 'Check the local Python service configuration and process.',
       );
+    if (query.images?.length && health.vision !== true)
+      throw new ProviderError(
+        422,
+        'images_unsupported',
+        'Start the Strands server with --vision.',
+      );
     const response = await this.fetch('/v1/systemone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(query),
+      body: JSON.stringify({
+        ...query,
+        ...(query.images?.length
+          ? {
+              images: query.images.map(
+                (image) =>
+                  `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`,
+              ),
+            }
+          : {}),
+      }),
     });
     if (!response.ok) {
       let criteriaMismatch = false;

@@ -1,3 +1,4 @@
+import { ImageGallery } from './Images';
 import { displayUserName } from './user-name';
 import { gradePartial, aggregateGrades } from '../shared/exchange';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
@@ -309,6 +310,7 @@ export function EvaluationWorkspace({
         <section className="panel">
           <h2>Input and human reference labels</h2>
           <pre className="state-snapshot">{pretty(data.run.query.state)}</pre>
+          <ImageGallery ids={data.run.query.imageIds} />
           <p className="hint">
             Executed by:{' '}
             {displayUserName(users.find((u) => u.id === data.executedByUserId))}{' '}

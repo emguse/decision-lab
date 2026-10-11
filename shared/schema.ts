@@ -35,12 +35,20 @@ export const requestSchema = z
   .object({
     model: name,
     state: content,
+    imageIds: z.array(z.string().uuid()).max(4).optional(),
     questions: z
       .record(name, questionSchema)
       .refine((v) => Object.keys(v).length > 0, 'Add at least one question'),
   })
   .strict();
 export type Query = z.infer<typeof requestSchema>;
+export interface DecisionImage {
+  mime: string;
+  data: Uint8Array;
+}
+export type DecisionInput = Omit<Query, 'imageIds'> & {
+  images?: DecisionImage[];
+};
 export type Question = z.infer<typeof questionSchema>;
 const probability = z.number().min(0).max(1);
 const probabilities = z

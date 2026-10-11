@@ -57,3 +57,13 @@ Questions without labels in the selected grading source remain ungraded. There i
 - Cases running when the server restarts are marked interrupted; they are not automatically resent.
 - Different content under the same name and content version causes a conflict. Assign a new version to modified input.
 - For data recovery, follow the backup procedure in [Operations and development](operations.md).
+
+## Image inputs
+
+In Playground, select, drop, or paste images into the **Images** area. Up to four static PNG, JPEG, or WebP files are accepted, each at most 5 MiB and 4096 px per side. GIF, animated images, SVG, and image URLs are unsupported. Move images left/right to set their order, or remove an attachment. Upload status and errors are shown; execution and Experiment saving wait for uploads to finish. Dismiss a failed upload after reviewing it; already uploaded images remain attached.
+
+Select a Strands connection whose health reports `vision: true` and the configured model. Other connections retain attachments but cannot execute them. Refresh the connection health after restarting Python with `--vision`. The runtime scales the longer side to 448 px for inference; the original image is retained. Text/JSON state can accompany images, or be an empty string.
+
+The JSON editor uses `imageIds: ["<uploaded UUID>"]`, not Base64 or URLs. IDs are local database references, not portable exchange data. Experiment saving, history, copying a saved run to Playground, and human evaluation retain images in their original order. Viewing an input image does not reveal model predictions. Profile switching discards pending UI updates from the prior profile. The application shares local input data; profiles provide attribution rather than authentication.
+
+Image-enabled Suite cases and portable image import/export are deferred. Existing text-only Suite and exchange workflows are unchanged.

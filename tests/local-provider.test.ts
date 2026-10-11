@@ -310,7 +310,7 @@ it('upgrades schema 2 additively, restores its backup, and rejects future metada
     s.close();
     const db = new DatabaseSync(path);
     db.exec(
-      'DROP TABLE suite_run_links; DROP TABLE suite_executions; DROP TABLE expected_exposures; DROP TABLE exchange_documents; DROP TABLE run_metadata; DROP TABLE experiment_metadata; PRAGMA user_version=2;',
+      'DROP TABLE run_images; DROP TABLE experiment_images; DROP TABLE image_uploads; DROP TABLE image_blobs; DROP TABLE suite_run_links; DROP TABLE suite_executions; DROP TABLE expected_exposures; DROP TABLE exchange_documents; DROP TABLE run_metadata; DROP TABLE experiment_metadata; PRAGMA user_version=2;',
     );
     const body = db.prepare('SELECT body FROM runs').get()!.body;
     const revisions = db.prepare('SELECT body FROM revisions').all();

@@ -15,6 +15,7 @@ import {
   type Run,
 } from '../shared/schema';
 import './style.css';
+import { ImageAttachments } from './Images';
 import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
 import { SuitesWorkspace } from './Suites';
@@ -67,6 +68,7 @@ function App({
   } | null>(null);
   const [suiteId, setSuiteId] = useState<string | null>(null);
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
+  const [imagesBlocked, setImagesBlocked] = useState(false);
   const [blind, setBlind] = useState(true);
   const [provider, setProvider] = useState<ProviderId>(
     () =>
@@ -233,10 +235,20 @@ function App({
     setMode('form');
   }
   async function submit(kind: 'runs' | 'experiments') {
-    if (lock.current || fieldError) return;
+    if (lock.current || fieldError || imagesBlocked) return;
     const q = mode === 'json' ? parseJson() : valid.success ? valid.data : null;
     if (!q) {
       setError('Check the request format.');
+      return;
+    }
+    if (
+      kind === 'runs' &&
+      q.imageIds?.length &&
+      (selectedConfig?.adapter !== 'strands' ||
+        health?.status !== 'ready' ||
+        health.vision !== true)
+    ) {
+      setError('Images require a ready Strands connection with --vision.');
       return;
     }
     lock.current = true;
@@ -576,6 +588,7 @@ function App({
                   <button
                     disabled={
                       fieldError ||
+                      imagesBlocked ||
                       busy ||
                       !jsonValid ||
                       !valid.success ||
@@ -589,8 +602,13 @@ function App({
                     className="primary"
                     disabled={
                       fieldError ||
+                      imagesBlocked ||
                       busy ||
                       !selectedConfig?.configured ||
+                      (Boolean(query.imageIds?.length) &&
+                        (selectedConfig?.adapter !== 'strands' ||
+                          health?.status !== 'ready' ||
+                          health.vision !== true)) ||
                       !jsonValid ||
                       !valid.success ||
                       !title.trim()
@@ -661,6 +679,21 @@ function App({
                         }
                       />
                     </label>
+                    <ImageAttachments
+                      ids={query.imageIds}
+                      userId={user.id}
+                      disabled={busy || fieldError || !jsonValid}
+                      onBlocked={setImagesBlocked}
+                      onChange={(imageIds) => update({ ...query, imageIds })}
+                    />
+                    {Boolean(query.imageIds?.length) &&
+                      (selectedConfig?.adapter !== 'strands' ||
+                        health?.vision !== true) && (
+                        <p role="status" className="hint">
+                          Images are retained. Select a ready Strands connection
+                          started with --vision to run.
+                        </p>
+                      )}
                     {mode === 'json' ? (
                       <>
                         <label>
@@ -668,6 +701,7 @@ function App({
                           <textarea
                             className="code"
                             aria-label="Request JSON"
+                            disabled={imagesBlocked}
                             rows={24}
                             value={json}
                             onChange={(e) => {

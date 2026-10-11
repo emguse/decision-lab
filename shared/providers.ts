@@ -11,6 +11,7 @@ export interface ProviderHealth {
   baseModel?: string;
   device?: string;
   maxLength?: number;
+  vision?: boolean;
 }
 const metadata = {
   requestedModel: z.string(),
