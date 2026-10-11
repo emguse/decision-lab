@@ -1,23 +1,31 @@
+import { createHash } from 'node:crypto';
+import {
+  ExchangeService,
+  importSchema,
+  gradingSelectionSchema,
+  type ExecuteQuery,
+} from './exchange.js';
+import { exchangeFormatSchema, serializeDocument } from '../shared/exchange.js';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { requestSchema } from '../shared/schema.js';
-import { ProviderError, type DecisionProvider } from './provider.js';
+import {
+  ProviderError,
+  type DecisionProvider,
+  type ConfiguredDecisionProvider,
+} from './provider.js';
 import { SCHEMA_VERSION, StoreError, type Store } from './store.js';
 import { providerIdSchema } from '../shared/providers.js';
-import type { SystemOneProvider } from './systemone-provider.js';
-import type { LocalDecisionProvider } from './local-provider.js';
 import { draftSchema } from '../shared/evaluation.js';
 export function createApp(
   store: Store,
   provider: DecisionProvider,
   configured: boolean,
-  local?: LocalDecisionProvider,
-  connections: SystemOneProvider[] = [],
+  connections: ConfiguredDecisionProvider[] = [],
 ) {
   const providers = new Map<string, DecisionProvider | undefined>([
     ['jev', provider],
-    ['strands-local', local],
   ]);
   for (const connection of connections)
     providers.set(connection.connection.id, connection);
@@ -25,20 +33,20 @@ export function createApp(
   app.use('/api/*', async (c, next) => {
     const host = c.req.header('host');
     if (host && !/^(127\.0\.0\.1|localhost):(5173|8787)$/.test(host))
-      return c.json({ error: '許可されていないホストです。' }, 403);
+      return c.json({ error: 'Host is not allowed.' }, 403);
     const origin = c.req.header('origin');
     if (
       origin &&
       !/^http:\/\/(127\.0\.0\.1|localhost):(5173|8787)$/.test(origin)
     )
-      return c.json({ error: '許可されていない接続元です。' }, 403);
+      return c.json({ error: 'Origin is not allowed.' }, 403);
     await next();
   });
   app.use(
     '/api/*',
     bodyLimit({
       maxSize: 1024 * 1024,
-      onError: (c) => c.json({ error: '入力は1MB以下にしてください。' }, 413),
+      onError: (c) => c.json({ error: 'Input must be 1 MiB or smaller.' }, 413),
     }),
   );
   app.onError((error, c) => {
@@ -53,8 +61,8 @@ export function createApp(
         error.status as 422 | 429 | 502 | 503 | 504,
       );
     if (error instanceof z.ZodError || error instanceof SyntaxError)
-      return c.json({ error: '入力形式を確認してください。' }, 400);
-    return c.json({ error: '保存またはサーバー処理に失敗しました。' }, 500);
+      return c.json({ error: 'Check the input format.' }, 400);
+    return c.json({ error: 'Server processing or persistence failed.' }, 500);
   });
   app.get('/api/config', (c) =>
     c.json({
@@ -69,26 +77,8 @@ export function createApp(
           healthCheck: false,
           questionInteraction: 'independent',
         },
-        'strands-local': {
-          label: 'Local · Strands Decider',
-          modelEditable: false,
-          healthCheck: true,
-          questionInteraction: 'independent',
-          configured: local?.configured ?? false,
-          model: local?.model ?? 'StrandsAgents/strands-decider-2B-hobson-v19',
-        },
         ...Object.fromEntries(
-          connections.map((p) => [
-            p.connection.id,
-            {
-              configured: p.configured,
-              model: p.connection.model,
-              label: p.connection.label,
-              modelEditable: p.connection.adapter !== 'llamacpp',
-              healthCheck: p.connection.adapter === 'llamacpp',
-              questionInteraction: p.connection.question_interaction,
-            },
-          ]),
+          connections.map((p) => [p.connection.id, p.config]),
         ),
       },
       schemaVersion: SCHEMA_VERSION,
@@ -97,11 +87,9 @@ export function createApp(
   );
   app.get('/api/providers/:id/health', async (c) => {
     const id = c.req.param('id');
-    if (id === 'strands-local')
-      return c.json(local ? await local.health() : { status: 'unconfigured' });
     const selected = connections.find((p) => p.connection.id === id);
     if (!selected)
-      return c.json({ error: '接続先が登録されていません。' }, 404);
+      return c.json({ error: 'Connection is not registered.' }, 404);
     return c.json(await selected.health());
   });
   const actor = (c: { req: { header(name: string): string | undefined } }) =>
@@ -176,59 +164,128 @@ export function createApp(
       201,
     );
   });
+  const exchange = new ExchangeService(store);
   let running = false;
-  app.post('/api/runs', async (c) => {
-    const userId = actor(c);
-    const v = input.parse(await c.req.json());
-    const selected = providers.get(v.provider);
+  function context(providerId: string, model: string) {
+    const selected = providers.get(providerId);
     const connection = connections.find(
-      (p) => p.connection.id === v.provider,
+      (p) => p.connection.id === providerId,
     )?.connection;
-    if (!selected)
+    if (
+      !selected ||
+      (providerId === 'jev' && !configured) ||
+      (connection &&
+        !connections.find((p) => p.connection.id === providerId)?.config
+          .configured)
+    )
       throw new ProviderError(
         503,
         'not_configured',
-        '接続先が未設定または削除されています。明示的に接続先を選択してください。',
+        'Connection is not configured or has been removed. Select a connection explicitly.',
       );
+    if (
+      connection &&
+      connections.find((p) => p.connection.id === providerId)?.config
+        .modelEditable === false &&
+      model !== connection.model
+    )
+      throw new ProviderError(
+        422,
+        'model_mismatch',
+        'Use the configured model ID.',
+      );
+    return {
+      fingerprint: createHash('sha256')
+        .update(
+          JSON.stringify(
+            connection ?? {
+              provider: providerId,
+              model,
+            },
+          ),
+        )
+        .digest('hex'),
+      metadata: connection
+        ? {
+            formatVersion: 2 as const,
+            provider: providerId,
+            label: connection.label,
+            adapter: connection.adapter,
+            questionInteraction: connection.question_interaction,
+            requestedModel: model,
+            artifactRevision: null,
+          }
+        : {
+            formatVersion: 1 as const,
+            provider: 'jev' as const,
+            requestedModel: model,
+            artifactRevision: null,
+          },
+    };
+  }
+  const execute: ExecuteQuery = async (
+    query,
+    title,
+    providerId,
+    userId,
+    blind,
+    link,
+  ) => {
+    context(providerId, query.model);
+    const selected = providers.get(providerId)!;
+    const connection = connections.find(
+      (p) => p.connection.id === providerId,
+    )?.connection;
+    const start = performance.now();
+    const output = await selected.evaluate(query);
+    const { rawResponse, executionInfo, ...response } = output;
+    const run = store.saveRun(
+      {
+        title,
+        query,
+        response,
+        elapsedMs: Math.round(performance.now() - start),
+        createdAt: new Date().toISOString(),
+      },
+      userId,
+      blind,
+      {
+        ...(connection
+          ? {
+              formatVersion: 2 as const,
+              label: connection.label,
+              adapter: connection.adapter,
+              questionInteraction: connection.question_interaction,
+              provider: providerId,
+            }
+          : {
+              formatVersion: 1 as const,
+              provider: 'jev' as const,
+            }),
+        requestedModel: query.model,
+        resolvedModel: response.model,
+        artifactRevision: null,
+        ...executionInfo,
+      },
+      rawResponse,
+      link,
+    );
+    return run;
+  };
+  app.post('/api/runs', async (c) => {
+    const userId = actor(c);
+    const v = input.parse(await c.req.json());
+    context(v.provider, v.query.model);
     if (running)
-      return c.json(
-        { error: '実行中のクエリが完了するまでお待ちください。' },
-        409,
-      );
+      return c.json({ error: 'Wait for the current request to finish.' }, 409);
     running = true;
     try {
-      const start = performance.now();
-      const output = await selected.evaluate(v.query);
-      const { rawResponse, executionInfo, ...response } = output;
-      const run = store.saveRun(
-        {
-          title: v.title,
-          query: v.query,
-          response,
-          elapsedMs: Math.round(performance.now() - start),
-          createdAt: new Date().toISOString(),
-        },
+      const run = await execute(
+        v.query,
+        v.title,
+        v.provider,
         userId,
         v.blind ?? false,
-        {
-          ...(connection
-            ? {
-                formatVersion: 2 as const,
-                label: connection.label,
-                adapter: connection.adapter,
-                questionInteraction: connection.question_interaction,
-                provider: v.provider,
-              }
-            : {
-                formatVersion: 1 as const,
-                provider: v.provider as 'jev' | 'strands-local',
-              }),
-          requestedModel: v.query.model,
-          resolvedModel: response.model,
-          artifactRevision: null,
-          ...(v.provider === 'strands-local' ? executionInfo : {}),
-        },
-        rawResponse,
       );
       return c.json(
         v.blind
@@ -239,6 +296,131 @@ export function createApp(
     } finally {
       running = false;
     }
+  });
+  app.get('/api/exchange/documents', (c) => {
+    actor(c);
+    return c.json(store.listDocuments());
+  });
+  app.post('/api/exchange/preview', async (c) => {
+    actor(c);
+    const documents = exchange.parseImport(
+      importSchema.parse(await c.req.json()),
+    );
+    return c.json(
+      documents.map((d) => ({
+        kind: d.kind,
+        name: d.name,
+        version: d.version,
+        ...(d.kind === 'experiment-suite'
+          ? {
+              caseCount: d.cases.length,
+              expectedCount: d.cases.filter(
+                (c) => c.expected && Object.keys(c.expected).length,
+              ).length,
+              definition: d.definition,
+            }
+          : { questionCount: Object.keys(d.questions).length }),
+      })),
+    );
+  });
+  app.post('/api/exchange/import', async (c) =>
+    c.json(
+      exchange.import(importSchema.parse(await c.req.json()), actor(c)),
+      201,
+    ),
+  );
+  app.post('/api/exchange/documents/:id/export', async (c) => {
+    const v = z
+      .object({ format: exchangeFormatSchema })
+      .strict()
+      .parse(await c.req.json());
+    return c.json(exchange.exportInput(c.req.param('id'), actor(c), v.format));
+  });
+  app.get('/api/suites/:id', (c) => {
+    const userId = actor(c),
+      suite = exchange.suite(c.req.param('id'));
+    return c.json({
+      ...suite,
+      cases: suite.cases.map(
+        ({ expected: _expected, note: _note, ...item }) => item,
+      ),
+      expectedSeenAt: store.expectedSeenAt(c.req.param('id'), userId),
+      executions: store
+        .listSuiteExecutions(c.req.param('id'))
+        .map((e) => exchange.progress(e, userId)),
+    });
+  });
+  const suiteRunInput = z
+    .object({ provider: providerIdSchema, model: requestSchema.shape.model })
+    .strict();
+  function launch(id: string) {
+    // Persistence and error handling live in the worker; requests return immediately.
+    void exchange
+      .run(id, execute)
+      .catch(() => {
+        /* Recover persisted running state on the next startup. */
+      })
+      .finally(() => {
+        running = false;
+      });
+  }
+  app.post('/api/suites/:id/execute', async (c) => {
+    const userId = actor(c),
+      v = suiteRunInput.parse(await c.req.json());
+    const selected = context(v.provider, v.model);
+    if (running) throw new StoreError(409, 'Another inference is running.');
+    const e = exchange.create(
+      c.req.param('id'),
+      v.provider,
+      v.model,
+      userId,
+      selected,
+    );
+    running = true;
+    const progress = exchange.progress(e, userId);
+    launch(e.id);
+    return c.json(progress, 202);
+  });
+  app.get('/api/suite-executions/:id', (c) =>
+    c.json(
+      exchange.progress(store.getSuiteExecution(c.req.param('id')), actor(c)),
+    ),
+  );
+  app.post('/api/suite-executions/:id/resume', (c) => {
+    const userId = actor(c),
+      prior = store.getSuiteExecution(c.req.param('id'));
+    const selected = context(prior.provider, prior.model);
+    if (running) throw new StoreError(409, 'Another inference is running.');
+    const e = exchange.resume(prior.id, userId, selected);
+    running = true;
+    const progress = exchange.progress(e, userId);
+    launch(e.id);
+    return c.json(progress, 202);
+  });
+  app.get('/api/runs/:id/suite-reference', (c) =>
+    c.json(exchange.reference(c.req.param('id'), actor(c))),
+  );
+  app.post('/api/suite-executions/:id/results', async (c) => {
+    const v = gradingSelectionSchema.parse(await c.req.json());
+    return c.json(
+      exchange.results(c.req.param('id'), actor(c), v.source, v.settings),
+    );
+  });
+  app.post('/api/suite-executions/:id/export', async (c) => {
+    const v = gradingSelectionSchema
+      .extend({ format: exchangeFormatSchema })
+      .parse(await c.req.json());
+    const result = exchange.results(
+      c.req.param('id'),
+      actor(c),
+      v.source,
+      v.settings,
+    );
+    return c.json({
+      text: serializeDocument(result, v.format),
+      format: v.format,
+      filename: `experiment-results-${result.execution.id}.${v.format}`,
+    });
   });
   return app;
 }

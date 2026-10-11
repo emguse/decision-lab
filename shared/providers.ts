@@ -5,7 +5,6 @@ export const providerIdSchema = z
   .max(64)
   .regex(/^[a-z][a-z0-9-]*$/);
 export type ProviderId = z.infer<typeof providerIdSchema>;
-export const LOCAL_MODEL = 'StrandsAgents/strands-decider-2B-hobson-v19';
 export interface ProviderHealth {
   status: 'unconfigured' | 'unreachable' | 'ready' | 'mismatch' | 'configured';
   model?: string;
@@ -31,7 +30,7 @@ export const executionMetadataSchema = z.discriminatedUnion('formatVersion', [
     formatVersion: z.literal(2),
     provider: providerIdSchema,
     label: z.string(),
-    adapter: z.enum(['llamacpp', 'systemone']),
+    adapter: z.enum(['llamacpp', 'systemone', 'strands']),
     questionInteraction: z.enum(['independent', 'joint', 'unknown']),
   }),
 ]);
@@ -42,6 +41,8 @@ export interface ProviderConfig {
   label?: string;
   modelEditable?: boolean;
   healthCheck?: boolean;
+  guidance?: string;
+  adapter?: 'llamacpp' | 'systemone' | 'strands';
   questionInteraction?: 'independent' | 'joint' | 'unknown';
 }
 export interface AppConfig {

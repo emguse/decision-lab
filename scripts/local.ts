@@ -2,6 +2,7 @@ import { initialQuery } from '../shared/schema.js';
 import { grade } from '../shared/evaluation.js';
 // Uses the running application so configuration, actor capture, and persistence match the UI.
 const origin = 'http://127.0.0.1:8787';
+const connectionId = process.env.DECISION_TEST_CONNECTION_ID ?? 'strands-local';
 async function request(path: string, body?: unknown) {
   const response = await fetch(`${origin}/api/${path}`, {
     ...(body
@@ -19,18 +20,22 @@ async function request(path: string, body?: unknown) {
 }
 try {
   const config = await request('config');
-  const health = await request('providers/strands-local/health');
+  if (config.providers[connectionId]?.adapter !== 'strands')
+    throw new Error(
+      'Select a configured Strands connection with DECISION_TEST_CONNECTION_ID.',
+    );
+  const health = await request(`providers/${connectionId}/health`);
   if (health.status !== 'ready')
     throw new Error(
       'Start the configured Python server before running this local check.',
     );
   const saved = await request('runs', {
     title: 'Local Japanese smoke test',
-    provider: 'strands-local',
+    provider: connectionId,
     blind: true,
     query: {
       ...initialQuery,
-      model: config.providers['strands-local'].model,
+      model: config.providers[connectionId].model,
       state:
         '同じ注文で二重に請求されました。至急返金してください。困っています。',
     },

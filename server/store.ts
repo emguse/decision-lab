@@ -1,5 +1,12 @@
 import { z } from 'zod';
 import {
+  inputDocumentSchema,
+  suiteExecutionSchema,
+  type InputDocument,
+  type SavedDocument,
+  type SuiteExecution,
+} from '../shared/exchange.js';
+import {
   executionMetadataSchema,
   providerIdSchema,
   type ExecutionMetadata,
@@ -27,7 +34,7 @@ export class StoreError extends Error {
     super(message);
   }
 }
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 const legacy = 'legacy-unknown';
 const migrations = [
   `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -40,6 +47,10 @@ const migrations = [
  CREATE TABLE revisions(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(id),user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,body TEXT NOT NULL);`,
   `CREATE TABLE run_metadata(run_id TEXT PRIMARY KEY REFERENCES runs(id),body TEXT NOT NULL,raw_body TEXT);
  CREATE TABLE experiment_metadata(experiment_id TEXT PRIMARY KEY REFERENCES experiments(id),provider TEXT NOT NULL,format_version INTEGER NOT NULL DEFAULT 1);`,
+  `CREATE TABLE exchange_documents(id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,version INTEGER NOT NULL,body TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,UNIQUE(kind,name,version));
+ CREATE TABLE suite_executions(id TEXT PRIMARY KEY,suite_id TEXT NOT NULL REFERENCES exchange_documents(id),body TEXT NOT NULL);
+ CREATE TABLE suite_run_links(run_id TEXT PRIMARY KEY REFERENCES runs(id),execution_id TEXT NOT NULL REFERENCES suite_executions(id),case_id TEXT NOT NULL,UNIQUE(execution_id,case_id));
+ CREATE TABLE expected_exposures(suite_id TEXT NOT NULL REFERENCES exchange_documents(id),user_id TEXT NOT NULL REFERENCES users(id),seen_at TEXT NOT NULL,PRIMARY KEY(suite_id,user_id));`,
 ];
 export class Store {
   private db: DatabaseSync;
@@ -121,7 +132,7 @@ export class Store {
     const user = id
       ? this.listUsers().find((u) => u.id === id && u.kind === 'local')
       : this.listUsers().find((u) => u.kind === 'local');
-    if (!user) throw new StoreError(400, '利用者が存在しません。');
+    if (!user) throw new StoreError(400, 'User does not exist.');
     return user.id;
   }
   addUser(name: string) {
@@ -135,12 +146,9 @@ export class Store {
     const r = this.db
       .prepare('SELECT * FROM attribution WHERE id=? AND entity=?')
       .get(id, entity);
-    if (!r) throw new StoreError(404, '保存データが見つかりません。');
+    if (!r) throw new StoreError(404, 'Saved data was not found.');
     if (Number(r.format_version) !== 1)
-      throw new StoreError(
-        409,
-        '保存形式が未対応です。アプリを更新してください。',
-      );
+      throw new StoreError(409, 'Unsupported record format. Update the app.');
     return { userId: String(r.user_id), blind: Boolean(r.blind) };
   }
   saveRun(
@@ -149,6 +157,7 @@ export class Store {
     blind = false,
     execution?: ExecutionMetadata,
     rawResponse?: unknown,
+    suiteLink?: { executionId: string; caseId: string; attemptId: string },
   ): Run {
     this.actor(actor);
     const saved = { ...run, id: randomUUID() };
@@ -174,6 +183,22 @@ export class Store {
         ),
         rawResponse === undefined ? null : JSON.stringify(rawResponse),
       );
+      if (suiteLink) {
+        const execution = this.getSuiteExecution(suiteLink.executionId);
+        const item = execution.cases.find((c) => c.caseId === suiteLink.caseId);
+        const attempt = item?.attempts.find(
+          (a) => a.id === suiteLink.attemptId,
+        );
+        if (!item || !attempt || attempt.status !== 'running' || item.runId)
+          throw new StoreError(409, 'The case execution state changed.');
+        item.status = attempt.status = 'succeeded';
+        attempt.finishedAt = new Date().toISOString();
+        item.runId = saved.id;
+        this.db
+          .prepare('INSERT INTO suite_run_links VALUES (?,?,?)')
+          .run(saved.id, execution.id, item.caseId);
+        this.putSuiteExecution(execution);
+      }
       this.assign(saved.id, actor);
       if (!blind) this.reveal(saved.id, actor);
     });
@@ -182,7 +207,7 @@ export class Store {
   getRun(id: string): Run {
     this.attribution(id);
     const r = this.db.prepare('SELECT body FROM runs WHERE id=?').get(id);
-    if (!r) throw new StoreError(404, '実行結果が見つかりません。');
+    if (!r) throw new StoreError(404, 'Run was not found.');
     const run: Run = JSON.parse(String(r.body));
     const meta = this.db
       .prepare('SELECT body,raw_body FROM run_metadata WHERE run_id=?')
@@ -198,10 +223,7 @@ export class Store {
           },
     );
     if (!parsedExecution.success)
-      throw new StoreError(
-        409,
-        '保存形式が未対応です。アプリを更新してください。',
-      );
+      throw new StoreError(409, 'Unsupported record format. Update the app.');
     return {
       ...run,
       execution: parsedExecution.data!,
@@ -260,11 +282,7 @@ export class Store {
         .run(saved.id, 'experiment', this.actor(actor));
       this.db
         .prepare('INSERT INTO experiment_metadata VALUES (?,?,?)')
-        .run(
-          saved.id,
-          provider,
-          ['jev', 'strands-local'].includes(provider) ? 1 : 2,
-        );
+        .run(saved.id, provider, provider === 'jev' ? 1 : 2);
     });
     return { ...saved, createdByUserId: actor, provider };
   }
@@ -275,14 +293,15 @@ export class Store {
       )
       .get(id);
     if (meta && ![1, 2].includes(Number(meta.format_version)))
-      throw new StoreError(409, '保存形式が未対応です。');
+      throw new StoreError(409, 'Unsupported record format.');
     if (!meta) return 'jev';
     const parsed = (
       Number(meta.format_version) === 1
         ? z.enum(['jev', 'strands-local'])
         : providerIdSchema
     ).safeParse(meta.provider);
-    if (!parsed.success) throw new StoreError(409, '保存形式が未対応です。');
+    if (!parsed.success)
+      throw new StoreError(409, 'Unsupported record format.');
     return parsed.data;
   }
   listExperiments() {
@@ -361,6 +380,7 @@ export class Store {
       revealed: this.revealed(id, actor),
       assignments: this.assignments(id),
       executedByUserId: this.attribution(id).userId,
+      ...this.expectedExposure(id, actor),
     };
   }
   saveDraft(id: string, actor: string, draft: Draft) {
@@ -368,7 +388,7 @@ export class Store {
     try {
       validateLabels(this.getRun(id).query, draft.labels);
     } catch {
-      throw new StoreError(400, '正解ラベルを確認してください。');
+      throw new StoreError(400, 'Check the reference labels.');
     }
     this.db
       .prepare(
@@ -381,7 +401,7 @@ export class Store {
     try {
       validateLabels(this.getRun(id).query, draft.labels, true);
     } catch {
-      throw new StoreError(400, 'すべての質問へ正解ラベルを付けてください。');
+      throw new StoreError(400, 'Label every question before finalizing.');
     }
     return this.transaction(() => {
       this.saveDraft(id, actor, draft);
@@ -394,6 +414,7 @@ export class Store {
         exposure: this.exposure(id, actor),
         kind: 'individual',
         sourceRevisionIds: [],
+        ...this.expectedExposure(id, actor),
       };
       this.db
         .prepare('INSERT INTO revisions VALUES (?,?,?,?,?)')
@@ -409,7 +430,7 @@ export class Store {
   evaluation(id: string, actor: string) {
     this.actor(actor);
     if (!this.revealed(id, actor))
-      throw new StoreError(403, 'ラベルを確定してから回答を公開してください。');
+      throw new StoreError(403, 'Finalize labels before revealing answers.');
     return {
       run: this.getRun(id),
       revisions: this.revisions(id, actor),
@@ -423,7 +444,10 @@ export class Store {
       !assigned.some((a) => a.userId === actor) ||
       assigned.some((a) => !a.finalized)
     )
-      throw new StoreError(409, '割り当てた全評価者の確定をお待ちください。');
+      throw new StoreError(
+        409,
+        'Wait for all assigned evaluators to finalize.',
+      );
     const revisions = assigned.map((a) => this.revisions(id, a.userId).at(-1)!);
     const references = this.db
       .prepare(
@@ -438,14 +462,11 @@ export class Store {
       const comparison = this.comparison(id, actor);
       const expected = comparison.revisions.map((r) => r.id).sort();
       if (JSON.stringify([...sourceIds].sort()) !== JSON.stringify(expected))
-        throw new StoreError(
-          409,
-          '比較結果が更新されました。再読み込みしてください。',
-        );
+        throw new StoreError(409, 'Comparison changed. Reload it.');
       try {
         validateLabels(this.getRun(id).query, draft.labels, true);
       } catch {
-        throw new StoreError(400, '採用ラベルをすべて入力してください。');
+        throw new StoreError(400, 'Enter all adopted reference labels.');
       }
       const revision: Revision = {
         ...draft,
@@ -456,12 +477,177 @@ export class Store {
         exposure: 'exposed',
         kind: 'reference',
         sourceRevisionIds: sourceIds,
+        ...this.expectedExposure(id, actor),
       };
       this.db
         .prepare('INSERT INTO revisions VALUES (?,?,?,?,?)')
         .run(revision.id, id, actor, 'reference', JSON.stringify(revision));
       return revision;
     });
+  }
+  private expectedExposure(runId: string, actor: string) {
+    const linked = this.suiteForRun(runId);
+    return linked
+      ? {
+          expectedExposure: {
+            suiteId: linked.execution.suiteId,
+            seenAt: this.expectedSeenAt(linked.execution.suiteId, actor),
+          },
+        }
+      : {};
+  }
+  listDocuments(): SavedDocument[] {
+    return this.db
+      .prepare(
+        'SELECT id,kind,name,version,created_at AS createdAt,user_id AS createdByUserId FROM exchange_documents ORDER BY rowid DESC',
+      )
+      .all() as unknown as SavedDocument[];
+  }
+  getDocument(id: string): InputDocument {
+    const row = this.db
+      .prepare('SELECT body FROM exchange_documents WHERE id=?')
+      .get(id);
+    if (!row) throw new StoreError(404, 'Definition or suite was not found.');
+    const parsed = inputDocumentSchema.safeParse(JSON.parse(String(row.body)));
+    if (!parsed.success)
+      throw new StoreError(409, 'Unsupported exchange record format.');
+    return parsed.data;
+  }
+  saveDocuments(documents: InputDocument[], actor: string): SavedDocument[] {
+    this.actor(actor);
+    const remember = (saved: SavedDocument, document: InputDocument) => {
+      if (
+        document.kind === 'experiment-suite' &&
+        document.cases.some((c) => c.expected && Object.keys(c.expected).length)
+      )
+        this.noteExpectedSeen(saved.id, actor);
+      return saved;
+    };
+    return this.transaction(() =>
+      documents.map((document) => {
+        const found = this.listDocuments().find(
+          (d) =>
+            d.kind === document.kind &&
+            d.name === document.name &&
+            d.version === document.version,
+        );
+        if (found) {
+          // Ordering is part of the exchanged input, including Choice criteria.
+          if (
+            JSON.stringify(this.getDocument(found.id)) !==
+            JSON.stringify(document)
+          )
+            throw new StoreError(
+              409,
+              'Different content exists under this name and version. Increment version.',
+            );
+          return remember(found, document);
+        }
+        const saved: SavedDocument = {
+          id: randomUUID(),
+          kind: document.kind,
+          name: document.name,
+          version: document.version,
+          createdAt: new Date().toISOString(),
+          createdByUserId: actor,
+        };
+        this.db
+          .prepare('INSERT INTO exchange_documents VALUES (?,?,?,?,?,?,?)')
+          .run(
+            saved.id,
+            saved.kind,
+            saved.name,
+            saved.version,
+            JSON.stringify(document),
+            actor,
+            saved.createdAt,
+          );
+        return remember(saved, document);
+      }),
+    );
+  }
+  noteExpectedSeen(suiteId: string, actor: string) {
+    this.actor(actor);
+    this.db
+      .prepare('INSERT OR IGNORE INTO expected_exposures VALUES (?,?,?)')
+      .run(suiteId, actor, new Date().toISOString());
+  }
+  expectedSeenAt(suiteId: string, actor: string): string | null {
+    return (
+      (this.db
+        .prepare(
+          'SELECT seen_at FROM expected_exposures WHERE suite_id=? AND user_id=?',
+        )
+        .get(suiteId, actor)?.seen_at as string | undefined) ?? null
+    );
+  }
+  putSuiteExecution(execution: SuiteExecution) {
+    this.db
+      .prepare(
+        'INSERT INTO suite_executions VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
+      )
+      .run(execution.id, execution.suiteId, JSON.stringify(execution));
+  }
+  getSuiteExecution(id: string): SuiteExecution {
+    const row = this.db
+      .prepare('SELECT body FROM suite_executions WHERE id=?')
+      .get(id);
+    if (!row) throw new StoreError(404, 'Suite execution was not found.');
+    const parsed = suiteExecutionSchema.safeParse(JSON.parse(String(row.body)));
+    if (!parsed.success)
+      throw new StoreError(409, 'Unsupported suite execution record format.');
+    return parsed.data;
+  }
+  listSuiteExecutions(suiteId?: string): SuiteExecution[] {
+    return this.db
+      .prepare(
+        `SELECT body FROM suite_executions ${suiteId ? 'WHERE suite_id=?' : ''} ORDER BY rowid DESC`,
+      )
+      .all(...(suiteId ? [suiteId] : []))
+      .map((r) => {
+        const parsed = suiteExecutionSchema.safeParse(
+          JSON.parse(String(r.body)),
+        );
+        if (!parsed.success)
+          throw new StoreError(
+            409,
+            'Unsupported suite execution record format.',
+          );
+        return parsed.data;
+      });
+  }
+  suiteForRun(runId: string) {
+    const row = this.db
+      .prepare(
+        'SELECT execution_id,case_id FROM suite_run_links WHERE run_id=?',
+      )
+      .get(runId);
+    return row
+      ? {
+          execution: this.getSuiteExecution(String(row.execution_id)),
+          caseId: String(row.case_id),
+        }
+      : null;
+  }
+  interruptSuiteExecutions() {
+    for (const e of this.listSuiteExecutions().filter(
+      (e) => e.status === 'running',
+    )) {
+      e.status = 'interrupted';
+      e.finishedAt = new Date().toISOString();
+      for (const c of e.cases.filter((c) => c.status === 'running')) {
+        c.status = 'interrupted';
+        const a = c.attempts.at(-1)!;
+        a.status = 'interrupted';
+        a.finishedAt = new Date().toISOString();
+        a.error = {
+          code: 'interrupted',
+          message:
+            'Interrupted by a server restart. Check the provider before resending.',
+        };
+      }
+      this.putSuiteExecution(e);
+    }
   }
   close() {
     this.db.close();

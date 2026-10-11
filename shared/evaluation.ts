@@ -29,6 +29,7 @@ export interface Revision extends Draft {
   exposure: 'blind' | 'exposed' | 'unknown';
   kind: 'individual' | 'reference';
   sourceRevisionIds: string[];
+  expectedExposure?: { suiteId: string; seenAt: string | null };
 }
 export interface RunSummary {
   id: string;
@@ -47,6 +48,7 @@ export interface Labeling {
   revisions: Revision[];
   assignments: { userId: string; name: string; finalized: boolean }[];
   executedByUserId: string;
+  expectedExposure?: { suiteId: string; seenAt: string | null };
 }
 export interface Evaluation {
   run: Run;

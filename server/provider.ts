@@ -1,3 +1,5 @@
+import type { Connection } from './connections.js';
+import type { ProviderConfig, ProviderHealth } from '../shared/providers.js';
 import {
   validateResponse,
   type Query,
@@ -20,6 +22,11 @@ export interface DecisionProvider {
     }
   >;
 }
+export interface ConfiguredDecisionProvider extends DecisionProvider {
+  readonly connection: Connection;
+  readonly config: ProviderConfig;
+  health(): Promise<ProviderHealth>;
+}
 export class JevProvider implements DecisionProvider {
   constructor(
     private key: string | undefined,
@@ -31,7 +38,7 @@ export class JevProvider implements DecisionProvider {
       throw new ProviderError(
         503,
         'not_configured',
-        'TYPESAFE_API_KEY をサーバー側に設定してください。',
+        'Set TYPESAFE_API_KEY on the server.',
       );
     let response: Response;
     try {
@@ -52,22 +59,22 @@ export class JevProvider implements DecisionProvider {
         timeout ? 504 : 502,
         timeout ? 'timeout' : 'network_error',
         timeout
-          ? 'Jev API がタイムアウトしました。'
-          : 'Jev API に接続できませんでした。',
+          ? 'The Jev API timed out.'
+          : 'Could not connect to the Jev API.',
       );
     }
     if (!response.ok) {
       const messages: Record<number, string> = {
-        401: 'Jev API キーが無効です。',
-        403: 'Jev API へのアクセスが拒否されました。',
-        422: 'Jev API が入力を受け付けませんでした。',
-        429: 'レート制限に達しました。時間をおいて再実行してください。',
-        529: 'Jev API が混雑しています。',
+        401: 'The Jev API key is invalid.',
+        403: 'Access to the Jev API was denied.',
+        422: 'The Jev API rejected the input.',
+        429: 'Rate limit reached. Wait before trying again.',
+        529: 'The Jev API is busy.',
       };
       throw new ProviderError(
         response.status === 429 ? 429 : 502,
         `upstream_${response.status}`,
-        messages[response.status] ?? `Jev API エラー (${response.status})`,
+        messages[response.status] ?? `Jev API error (${response.status})`,
       );
     }
     try {
@@ -76,7 +83,7 @@ export class JevProvider implements DecisionProvider {
       throw new ProviderError(
         502,
         'invalid_response',
-        'Jev API から想定外のレスポンスが返りました。',
+        'The Jev API returned an unexpected response.',
       );
     }
   }

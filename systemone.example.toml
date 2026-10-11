@@ -18,3 +18,15 @@ question_interaction = "joint"
 # endpoint = "https://example.com/v1/systemone"
 # model = "your-model"
 # api_key_env = "CUSTOM_SYSTEMONE_API_KEY"
+
+# Strands Decider runs separately; match model and endpoint to that service.
+# The model below is an example, not an application default.
+# Keep id = "strands-local" to reuse existing saved experiments.
+# [[connections]]
+# id = "strands-local"
+# label = "Local · Strands Decider"
+# adapter = "strands"
+# endpoint = "http://127.0.0.1:8000/v1/systemone"
+# model = "StrandsAgents/strands-decider-2B-qwen3.5-v1-2610"
+# timeout_ms = 60000
+# question_interaction = "independent"

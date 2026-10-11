@@ -698,3 +698,173 @@ label > input[type='checkbox'] {
   width: auto;
   margin-right: 8px;
 }
+
+.suite-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.exchange-source {
+  min-height: 160px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.exchange-document {
+  padding: 16px 0;
+  border-bottom: 1px solid #dce2d5;
+}
+.exchange-document small,
+.suite-table small {
+  display: block;
+  margin-top: 6px;
+  color: #66776b;
+}
+.suite-detail {
+  margin-top: 20px;
+}
+.suite-detail .toolbar {
+  flex-wrap: wrap;
+}
+.suite-detail .toolbar label {
+  margin: 8px 0;
+}
+.suite-table {
+  overflow-x: auto;
+}
+.suite-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.suite-table th,
+.suite-table td {
+  text-align: left;
+  border-bottom: 1px solid #dce2d5;
+  padding: 12px;
+}
+@media (max-width: 900px) {
+  .suite-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.suite-grid > .panel > details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+[hidden] {
+  display: none !important;
+}
+.help-layout {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.help-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: sticky;
+  top: 16px;
+}
+.help-navigation button {
+  text-align: left;
+}
+.help-navigation button[aria-pressed='true'] {
+  border-color: #344d3b;
+  background: #ecf4f0;
+}
+.help-document {
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.help-document h1 {
+  font-size: 28px;
+}
+.help-document h2,
+.help-document h3 {
+  margin-top: 32px;
+}
+.help-document a {
+  color: #256b54;
+  text-decoration: underline;
+}
+.help-document pre {
+  overflow-x: auto;
+  padding: 16px;
+  background: #f4f5f4;
+  border-radius: 8px;
+}
+.help-document code {
+  font-size: 0.9em;
+}
+.help-document table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.help-document th,
+.help-document td {
+  padding: 10px;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+.help-document li {
+  margin: 6px 0;
+}
+.suite-return {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.suite-input-export {
+  margin-bottom: 24px;
+}
+@media (max-width: 900px) {
+  .help-layout {
+    grid-template-columns: 1fr;
+  }
+  .help-navigation {
+    position: static;
+  }
+  .suite-return {
+    flex-wrap: wrap;
+  }
+}
+
+footer .footer-link {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.help-document h2 {
+  font-size: 19px;
+}
+.help-document h3 {
+  font-size: 16px;
+}
+.help-document th:first-child,
+.help-document td:first-child {
+  white-space: nowrap;
+}
+.suite-file-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.suite-file-picker span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}

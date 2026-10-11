@@ -27,6 +27,14 @@ Copies of the installed production dependency license texts are retained under [
 | `@hono/node-server` | MIT | [hono-node-server](third-party-licenses/hono-node-server.txt) |
 | Zod | MIT | [zod](third-party-licenses/zod.txt) |
 | `smol-toml` | BSD-3-Clause | [smol-toml](third-party-licenses/smol-toml.txt) |
+| `yaml` | ISC | [yaml](third-party-licenses/yaml.txt) |
+| `markdown-it` | MIT | [markdown-it](third-party-licenses/markdown-it.txt) |
+| `argparse` | PSF-2.0 | [argparse](third-party-licenses/argparse.txt) |
+| `entities` | BSD-2-Clause | [entities](third-party-licenses/entities.txt) |
+| `linkify-it` | MIT | [linkify-it](third-party-licenses/linkify-it.txt) |
+| `mdurl` | MIT | [mdurl](third-party-licenses/mdurl.txt) |
+| `punycode.js` | MIT | [punycode.js](third-party-licenses/punycode.js.txt) |
+| `uc.micro` | MIT | [uc.micro](third-party-licenses/uc.micro.txt) |
 | dotenv | BSD-2-Clause | [dotenv](third-party-licenses/dotenv.txt) |
 
 Development tools and Python dependencies retain the license files in their own distributions. `package-lock.json` records npm package versions and license identifiers; the separately managed Python environment has its own dependency lockfile.

@@ -1,3 +1,5 @@
+// Historical checkpoint used by the retained Strands response fixtures.
+export const LOCAL_MODEL = 'StrandsAgents/strands-decider-2B-hobson-v19';
 export const fixture = {
   model: 'jev-test',
   answers: {

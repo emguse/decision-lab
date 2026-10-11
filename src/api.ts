@@ -18,6 +18,6 @@ export async function api<T>(
       : { headers: { 'X-Local-User': userId } },
   );
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '処理に失敗しました。');
+  if (!res.ok) throw new Error(data.error || 'The operation failed.');
   return data;
 }

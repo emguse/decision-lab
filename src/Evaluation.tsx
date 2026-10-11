@@ -1,3 +1,5 @@
+import { displayUserName } from './user-name';
+import { gradePartial, aggregateGrades } from '../shared/exchange';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { api } from './api';
 import { ResultView } from './ResultView';
@@ -38,7 +40,7 @@ function LabelControls({
               <p className="hint">
                 {q.criteria
                   ? pretty(q.criteria)
-                  : '質問が成立する場合は Yes、成立しない場合は No'}
+                  : 'Choose Yes if the condition holds, otherwise No'}
               </p>
               <div className="yes-no">
                 {[true, false].map((v) => (
@@ -57,9 +59,9 @@ function LabelControls({
             </>
           ) : (
             <label>
-              正解ラベル
+              Reference label
               <select
-                aria-label={`正解 ${id}`}
+                aria-label={`Reference ${id}`}
                 value={labels[id] === undefined ? '' : String(labels[id])}
                 onChange={(e) => {
                   const next = { ...labels };
@@ -72,10 +74,10 @@ function LabelControls({
                   change(next);
                 }}
               >
-                <option value="">未選択</option>
+                <option value="">Not selected</option>
                 {Object.entries(q.criteria).map(([k, v]) => (
                   <option key={k} value={k}>
-                    {k} · {pretty(v) ?? '説明なし'}
+                    {k} · {pretty(v) ?? 'No description'}
                   </option>
                 ))}
               </select>
@@ -101,6 +103,12 @@ export function EvaluationWorkspace({
   onCopy: (q: Query, t: string, provider?: ProviderId) => void;
   onChanged: () => Promise<void>;
 }) {
+  const [suiteReference, setSuiteReference] = useState<{
+    expected: Labels;
+    settings: Draft['settings'];
+    note: string;
+    expectedSeenAt: string | null;
+  } | null>(null);
   const [data, setData] = useState<Labeling | null>(null),
     [draft, setDraft] = useState<Draft>(emptyDraft),
     [evaluation, setEvaluation] = useState<Evaluation | null>(null),
@@ -143,6 +151,10 @@ export function EvaluationWorkspace({
     dirty.current = false;
     if (v.revealed) {
       const e = await request<Evaluation>(`runs/${runId}/evaluation`);
+      const reference = await request<typeof suiteReference>(
+        `runs/${runId}/suite-reference`,
+      );
+      if (mounted.current) setSuiteReference(reference);
       if (mounted.current) {
         setEvaluation(e);
         setRevisionId(e.revisions.at(-1)?.id ?? '');
@@ -169,7 +181,7 @@ export function EvaluationWorkspace({
       if (mounted.current) await onChanged();
     } catch (e) {
       if (mounted.current)
-        setError(e instanceof Error ? e.message : '処理に失敗しました。');
+        setError(e instanceof Error ? e.message : 'The operation failed.');
     } finally {
       lock.current = false;
       if (mounted.current) setBusy(false);
@@ -179,14 +191,14 @@ export function EvaluationWorkspace({
     return (
       <div className="panel empty">
         <h1>Evaluation</h1>
-        <p>実行履歴を選んで、正解ラベルを付けてください。</p>
-        <p>ブラインド実行なら、ラベル確定まで回答は届きません。</p>
+        <p>Select a saved run to add reference labels.</p>
+        <p>For blind runs, answers remain hidden until you finalize labels.</p>
       </div>
     );
   if (!data)
     return (
       <div className="panel">
-        {error ? <p role="alert">{error}</p> : '評価を読み込んでいます…'}
+        {error ? <p role="alert">{error}</p> : 'Loading evaluation…'}
       </div>
     );
   const selected =
@@ -196,6 +208,22 @@ export function EvaluationWorkspace({
     selected && evaluation
       ? grade(evaluation.run, selected.labels, draft.settings)
       : null;
+  const expectedGrade =
+    evaluation && suiteReference && Object.keys(suiteReference.expected).length
+      ? gradePartial(
+          evaluation.run,
+          suiteReference.expected,
+          suiteReference.settings,
+          'expected',
+          null,
+        )
+      : null;
+  const expectedSummary = expectedGrade
+    ? aggregateGrades(
+        [{ status: 'succeeded', grading: expectedGrade }],
+        Object.keys(data.run.query.questions).length,
+      )
+    : null;
   const complete =
     Object.keys(draft.labels).length ===
     Object.keys(data.run.query.questions).length;
@@ -205,14 +233,14 @@ export function EvaluationWorkspace({
         <div>
           <div className="eyebrow">EVALUATION / HUMAN LABELS</div>
           <h1>{data.run.title}</h1>
-          <p>{user.name} の独立したラベル付け</p>
+          <p>Independent labeling for {displayUserName(user)}</p>
         </div>
         <span className="status">
           {data.exposure === 'blind'
-            ? '回答未公開'
+            ? 'Answers hidden'
             : data.exposure === 'unknown'
-              ? '旧データ：閲覧状況不明'
-              : '回答閲覧済み'}
+              ? 'Legacy data: exposure unknown'
+              : 'Answers viewed'}
         </span>
       </header>
       {error && (
@@ -227,14 +255,22 @@ export function EvaluationWorkspace({
       )}
       <div className="setup">
         {data.revealed
-          ? '回答公開後の修正は新しい版として保存します。元のラベルは保持されます。'
-          : 'モデルの回答・確率と他の評価者のラベルは隠しています。全ラベルの確定後に回答を公開します。'}{' '}
+          ? 'Edits after reveal are saved as a new revision. Original labels are retained.'
+          : "Model answers, probabilities, and other evaluators' labels are hidden. Finalize all labels to reveal answers."}{' '}
         {data.exposure === 'unknown' &&
-          'この結果は過去に閲覧された可能性があるため、ブラインドだったとは扱いません。'}
+          'This result may have been viewed previously, so its labels are not considered blind.'}
       </div>
+      {data.expectedExposure && (
+        <p className="hint">
+          Imported expectations:{' '}
+          {data.expectedExposure.seenAt
+            ? 'Viewed (recorded separately from model exposure)'
+            : 'Not viewed'}
+        </p>
+      )}
       <div className="toolbar">
         <span className="progress">
-          ラベル {Object.keys(draft.labels).length} /{' '}
+          Labels {Object.keys(draft.labels).length} /{' '}
           {Object.keys(data.run.query.questions).length}
         </span>
         <button
@@ -242,11 +278,11 @@ export function EvaluationWorkspace({
           onClick={() =>
             void action(async () => {
               await save();
-              setNotice('ラベルの下書きを保存しました。');
+              setNotice('Label draft saved.');
             })
           }
         >
-          下書きを保存
+          Save draft
         </button>
         <button
           className="primary"
@@ -265,19 +301,18 @@ export function EvaluationWorkspace({
           }
         >
           {data.revealed
-            ? '新しいラベル版を確定'
-            : 'ラベルを確定して回答を公開'}
+            ? 'Finalize new label revision'
+            : 'Finalize labels and reveal answers'}
         </button>
       </div>
       <div className="columns">
         <section className="panel">
-          <h2>入力と人による正解</h2>
+          <h2>Input and human reference labels</h2>
           <pre className="state-snapshot">{pretty(data.run.query.state)}</pre>
           <p className="hint">
-            実行者：
-            {users.find((u) => u.id === data.executedByUserId)?.name ??
-              '旧データ・作成者不明'}{' '}
-            · {new Date(data.run.createdAt).toLocaleString('ja-JP')}
+            Executed by:{' '}
+            {displayUserName(users.find((u) => u.id === data.executedByUserId))}{' '}
+            · {new Date(data.run.createdAt).toLocaleString('en-US')}
           </p>
           <LabelControls
             query={data.run.query}
@@ -285,9 +320,9 @@ export function EvaluationWorkspace({
             change={change}
           />
           <label>
-            評価メモ
+            Evaluation note
             <textarea
-              aria-label="評価メモ"
+              aria-label="Evaluation note"
               value={draft.note}
               maxLength={4000}
               onChange={(e) => {
@@ -297,14 +332,15 @@ export function EvaluationWorkspace({
             />
           </label>
           <details>
-            <summary>評価者の割り当て</summary>
+            <summary>Evaluator assignments</summary>
             {data.assignments.map((a) => (
               <p key={a.userId}>
-                {a.name} · {a.finalized ? '確定済み' : '未確定'}
+                {displayUserName(users.find((u) => u.id === a.userId))} ·{' '}
+                {a.finalized ? 'Finalized' : 'Not finalized'}
               </p>
             ))}
             <select
-              aria-label="評価者を追加"
+              aria-label="Add evaluator"
               defaultValue=""
               disabled={busy}
               onChange={(e) => {
@@ -319,7 +355,7 @@ export function EvaluationWorkspace({
                   });
               }}
             >
-              <option value="">評価者を追加…</option>
+              <option value="">Add evaluator…</option>
               {users
                 .filter(
                   (u) =>
@@ -328,16 +364,17 @@ export function EvaluationWorkspace({
                 )
                 .map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.name}
+                    {displayUserName(u)}
                   </option>
                 ))}
             </select>
           </details>
           {!data.revealed && (
             <details>
-              <summary>ラベル確定前に回答を見る</summary>
+              <summary>View answers before finalizing labels</summary>
               <p className="validation">
-                先に回答を見ると、この評価者の以後のラベルは「閲覧後」と記録されます。元には戻せません。
+                Revealing answers marks this evaluator's subsequent labels as
+                post-reveal. This cannot be undone.
               </p>
               <button
                 disabled={busy}
@@ -349,7 +386,7 @@ export function EvaluationWorkspace({
                   })
                 }
               >
-                先に回答を公開する
+                Reveal answers now
               </button>
             </details>
           )}
@@ -357,17 +394,33 @@ export function EvaluationWorkspace({
         <section className="panel">
           {!evaluation ? (
             <div className="empty">
-              <h3>ブラインド評価</h3>
-              <p>正解を付け終わるまで、回答は表示しません。</p>
+              <h3>Blind evaluation</h3>
+              <p>Answers remain hidden until you finish labeling.</p>
             </div>
           ) : (
             <>
-              <h2>評価結果</h2>
+              <h2>Evaluation results</h2>
+              {suiteReference && (
+                <div className="setup">
+                  <h3>Comparison with imported expectations</h3>
+                  <p>
+                    These reference values are separate from finalized human
+                    labels.
+                    {expectedSummary
+                      ? `Noul ${expectedSummary.noul.correct}/${expectedSummary.noul.total} · Choice ${expectedSummary.choice.correct}/${expectedSummary.choice.total} · Score MAE ${expectedSummary.score.mae?.toFixed(3) ?? '—'} · Missing labels ${expectedSummary.missingLabels}`
+                      : 'No expectations specified.'}
+                  </p>
+                  <pre className="state-snapshot">
+                    {pretty(suiteReference.expected)}
+                  </pre>
+                  {suiteReference.note && <p>{suiteReference.note}</p>}
+                </div>
+              )}
               {evaluation.revisions.length > 0 && (
                 <label>
-                  ラベル版
+                  Label revision
                   <select
-                    aria-label="ラベル版"
+                    aria-label="Label revision"
                     value={revisionId}
                     onChange={(e) => setRevisionId(e.target.value)}
                   >
@@ -376,13 +429,15 @@ export function EvaluationWorkspace({
                       ...(comparison?.references ?? []),
                     ].map((r, i) => (
                       <option key={r.id} value={r.id}>
-                        {r.kind === 'reference' ? '採用正解' : '自分のラベル'} #
-                        {i + 1} ·{' '}
+                        {r.kind === 'reference'
+                          ? 'Adopted reference'
+                          : 'My labels'}{' '}
+                        #{i + 1} ·{' '}
                         {r.exposure === 'blind'
-                          ? '公開前に確定'
+                          ? 'Finalized before reveal'
                           : r.exposure === 'unknown'
-                            ? '閲覧状況不明'
-                            : '閲覧後に確定'}
+                            ? 'Exposure unknown'
+                            : 'Finalized after reveal'}
                       </option>
                     ))}
                   </select>
@@ -392,13 +447,13 @@ export function EvaluationWorkspace({
                 <>
                   <div className="metrics">
                     <div>
-                      <small>NOUL 正解 / 対象</small>
+                      <small>NOUL CORRECT / GRADED</small>
                       <strong>
                         {graded.noul.correct} / {graded.noul.total}
                       </strong>
                     </div>
                     <div>
-                      <small>CHOICE 正解 / 対象</small>
+                      <small>CHOICE CORRECT / GRADED</small>
                       <strong>
                         {graded.choice.correct} / {graded.choice.total}
                       </strong>
@@ -409,19 +464,19 @@ export function EvaluationWorkspace({
                     </div>
                   </div>
                   <p className="hint">
-                    Score 許容範囲内：{graded.score.correct} /{' '}
+                    Score within tolerance: {graded.score.correct} /{' '}
                     {graded.score.total}
                   </p>
                   <p>
                     {graded.allPass
-                      ? '全質問が判定基準を満たしています。'
-                      : '判定基準を満たさない質問があります。'}
+                      ? 'All questions meet the grading criteria.'
+                      : 'Some questions do not meet the grading criteria.'}
                   </p>
                   <div className="grading-settings">
                     <label>
-                      Noul 閾値
+                      Noul threshold
                       <input
-                        aria-label="Noul 閾値"
+                        aria-label="Noul threshold"
                         type="number"
                         min={0}
                         max={1}
@@ -440,9 +495,9 @@ export function EvaluationWorkspace({
                       />
                     </label>
                     <label>
-                      Score 許容誤差
+                      Score tolerance
                       <input
-                        aria-label="Score 許容誤差"
+                        aria-label="Score tolerance"
                         type="number"
                         min={0}
                         step={0.1}
@@ -461,8 +516,8 @@ export function EvaluationWorkspace({
                     </label>
                   </div>
                   <p className="hint">
-                    閾値・許容誤差の変更は保存済み回答で再集計します。API
-                    再実行はありません。元の版の設定：
+                    Changing the threshold or tolerance regrades saved answers
+                    without another API request. Original revision settings:
                     {JSON.stringify(selected!.settings)}
                   </p>
                   <label>
@@ -471,16 +526,16 @@ export function EvaluationWorkspace({
                       checked={onlyWrong}
                       onChange={(e) => setOnlyWrong(e.target.checked)}
                     />{' '}
-                    誤りだけ表示
+                    Show errors only
                   </label>
                   <div className="table-scroll">
                     <table>
                       <thead>
                         <tr>
-                          <th>質問</th>
-                          <th>正解</th>
-                          <th>回答</th>
-                          <th>結果</th>
+                          <th>Questions</th>
+                          <th>Reference</th>
+                          <th>Answer</th>
+                          <th>Result</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -492,9 +547,9 @@ export function EvaluationWorkspace({
                               <td>{String(r.expected)}</td>
                               <td>{String(r.predicted)}</td>
                               <td>
-                                {r.pass ? '正解' : '不一致'}
+                                {r.pass ? 'Correct' : 'Mismatch'}
                                 {r.error !== null &&
-                                  ` · 誤差 ${r.error.toFixed(3)}`}
+                                  ` · Error ${r.error.toFixed(3)}`}
                               </td>
                             </tr>
                           ))}
@@ -504,7 +559,7 @@ export function EvaluationWorkspace({
                 </>
               )}
               <details>
-                <summary>モデル回答・確率を見る</summary>
+                <summary>View model answers and probabilities</summary>
                 <ResultView result={evaluation.run} />
               </details>
               <button
@@ -516,12 +571,13 @@ export function EvaluationWorkspace({
                   )
                 }
               >
-                入力と質問を Playground にコピー
+                Copy input and questions to Playground
               </button>
               <div className="comparison">
-                <h3>評価者の比較と採用正解</h3>
+                <h3>Evaluator comparison and adopted references</h3>
                 <p className="hint">
-                  割り当てた全員が確定してから比較できます。
+                  Comparison is available after all assigned evaluators
+                  finalize.
                 </p>
                 <button
                   disabled={busy}
@@ -531,7 +587,7 @@ export function EvaluationWorkspace({
                     })
                   }
                 >
-                  確定ラベルを比較
+                  Compare finalized labels
                 </button>
                 {comparison && (
                   <>
@@ -539,10 +595,12 @@ export function EvaluationWorkspace({
                       <table>
                         <thead>
                           <tr>
-                            <th>質問</th>
+                            <th>Questions</th>
                             {comparison.revisions.map((r) => (
                               <th key={r.id}>
-                                {users.find((u) => u.id === r.userId)?.name}
+                                {displayUserName(
+                                  users.find((u) => u.id === r.userId),
+                                )}
                               </th>
                             ))}
                           </tr>
@@ -555,7 +613,7 @@ export function EvaluationWorkspace({
                                 {new Set(
                                   comparison.revisions.map((r) => r.labels[id]),
                                 ).size > 1
-                                  ? ' · 不一致'
+                                  ? ' · Disagreement'
                                   : ''}
                               </td>
                               {comparison.revisions.map((r) => (
@@ -567,7 +625,8 @@ export function EvaluationWorkspace({
                       </table>
                     </div>
                     <h3>
-                      協議して採用する正解（個人のラベルは変更されません）
+                      Agreed reference labels (individual labels remain
+                      unchanged)
                     </h3>
                     <LabelControls
                       query={data.run.query}
@@ -596,11 +655,13 @@ export function EvaluationWorkspace({
                             c ? { ...c, references: [...c.references, r] } : c,
                           );
                           setRevisionId(r.id);
-                          setNotice('採用正解を別版として保存しました。');
+                          setNotice(
+                            'Adopted references saved as a separate revision.',
+                          );
                         })
                       }
                     >
-                      採用正解を確定
+                      Save adopted references
                     </button>
                   </>
                 )}

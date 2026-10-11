@@ -1,0 +1,35 @@
+{
+  "kind": "experiment-suite",
+  "schemaVersion": 1,
+  "name": "routing-evaluation",
+  "version": 1,
+  "definition": {
+    "name": "knowledge-router",
+    "version": 1
+  },
+  "cases": [
+    {
+      "id": "q001",
+      "state": {
+        "query": "テーブル間の関係を調べたい",
+        "context": "製造業の業務システム"
+      },
+      "expected": {
+        "route": "sql-analysis"
+      }
+    },
+    {
+      "id": "q002",
+      "state": {
+        "query": "装置の保守手順を探したい"
+      },
+      "expected": {
+        "route": "document-search"
+      }
+    }
+  ],
+  "settings": {
+    "threshold": 0.5,
+    "tolerance": 0.5
+  }
+}
