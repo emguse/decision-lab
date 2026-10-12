@@ -39,6 +39,8 @@ inspect the exported per-question errors and probabilities, then propose a new
 version of the definition and/or Suite. Missing labels and failed cases are not
 correct answers and are not included in accuracy denominators.
 
+Experiment suites accept text/JSON cases only. Image cases and portable image import/export are not yet supported; use Playground for image runs and human evaluation.
+
 Import/export preserves values, types, and order after schema validation/defaults.
 It does not preserve comments, quoting, indentation, or original bytes. Object
 property order follows JavaScript's rules (integer-like keys enumerate numerically);

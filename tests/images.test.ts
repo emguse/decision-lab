@@ -29,12 +29,25 @@ async function png(width = 2, height = 2) {
     .png()
     .toBuffer();
 }
-async function context(vision?: boolean, status = 200) {
+async function context(vision?: boolean, status = 200, clef = false) {
   const store = new Store(':memory:');
   const sent: Record<string, unknown>[] = [];
   const headers: HeadersInit[] = [];
-  const provider = new StrandsProvider(connection, async (url, init) => {
+  const configuredModel = clef ? 'clef' : model;
+  const fetcher: typeof fetch = async (url, init) => {
     headers.push(init?.headers ?? {});
+    if (String(url).endsWith('/v1/models'))
+      return Response.json({
+        data: [
+          {
+            id: configuredModel,
+            architecture: {
+              input_modalities: vision ? ['text', 'image'] : ['text'],
+              output_modalities: ['decisions'],
+            },
+          },
+        ],
+      });
     if (String(url).endsWith('/health'))
       return Response.json({
         status: 'ok',
@@ -46,10 +59,22 @@ async function context(vision?: boolean, status = 200) {
       });
     sent.push(JSON.parse(String(init?.body)));
     return Response.json(
-      { ...fixture, model: model.split('/').at(-1) },
+      { ...fixture, model: configuredModel.split('/').at(-1) },
       { status },
     );
-  });
+  };
+  const provider = clef
+    ? new SystemOneProvider(
+        validateConnection({
+          ...connection,
+          adapter: 'llamacpp',
+          model: configuredModel,
+          question_interaction: 'joint',
+        }),
+        undefined,
+        fetcher,
+      )
+    : new StrandsProvider(connection, fetcher);
   const app = createApp(
     store,
     {
@@ -66,7 +91,12 @@ async function context(vision?: boolean, status = 200) {
     await validateImage(bytes),
     store.actor(),
   );
-  const query = { ...initialQuery, model, imageIds: [image.id], state: '' };
+  const query = {
+    ...initialQuery,
+    model: configuredModel,
+    imageIds: [image.id],
+    state: '',
+  };
   const post = (path: string, body: unknown) =>
     app.request(`http://127.0.0.1:8787/api/${path}`, {
       method: 'POST',
@@ -212,54 +242,57 @@ describe('image API and inference', () => {
       c.store.close();
     }
   });
-  it('forwards ordered images with no app fields or credentials and preserves blind projections', async () => {
-    const c = await context(true);
-    try {
-      const bytes = await png(3, 1);
-      const second = c.store.saveImage(
-        bytes,
-        await validateImage(bytes),
-        c.store.actor(),
-      );
-      c.query.imageIds = [second.id, c.image.id];
-      const response = await c.post('runs', {
-        title: 'Image run',
-        query: c.query,
-        provider: 'vision',
-        blind: true,
-      });
-      expect(response.status).toBe(201);
-      const body = await response.json();
-      expect(body.run.query.imageIds).toEqual(c.query.imageIds);
-      for (const field of ['response', 'rawResponse', 'execution'])
-        expect(body.run).not.toHaveProperty(field);
-      expect(c.sent[0]).not.toHaveProperty('imageIds');
-      expect(c.sent[0].images).toEqual(
-        c.store
-          .resolveImages(c.query.imageIds)
-          .map(
-            (image) =>
-              `data:${image.mime};base64,${image.data.toString('base64')}`,
-          ),
-      );
-      expect(c.headers.every((h) => !new Headers(h).has('Authorization'))).toBe(
-        true,
-      );
-      const user = c.store.addUser('Another evaluator');
-      const projected = c.store.labeling(body.run.id, user.id);
-      await c.app.request(`/api/images/${c.image.id}`, {
-        headers: { 'X-Local-User': user.id },
-      });
-      expect(c.store.exposure(body.run.id, user.id)).toBe('blind');
-      expect(projected.run).not.toHaveProperty('response');
-      expect(c.store.listExperiments()).toEqual([]);
-      expect(JSON.stringify(c.store.listSummaries(user.id))).not.toContain(
-        'base64',
-      );
-    } finally {
-      c.store.close();
-    }
-  });
+  it.each([false, true])(
+    'forwards ordered images with no app fields or credentials and preserves blind projections (Clef=%s)',
+    async (clef) => {
+      const c = await context(true, 200, clef);
+      try {
+        const bytes = await png(3, 1);
+        const second = c.store.saveImage(
+          bytes,
+          await validateImage(bytes),
+          c.store.actor(),
+        );
+        c.query.imageIds = [second.id, c.image.id];
+        const response = await c.post('runs', {
+          title: 'Image run',
+          query: c.query,
+          provider: 'vision',
+          blind: true,
+        });
+        expect(response.status).toBe(201);
+        const body = await response.json();
+        expect(body.run.query.imageIds).toEqual(c.query.imageIds);
+        for (const field of ['response', 'rawResponse', 'execution'])
+          expect(body.run).not.toHaveProperty(field);
+        expect(c.sent[0]).not.toHaveProperty('imageIds');
+        expect(c.sent[0].images).toEqual(
+          c.store
+            .resolveImages(c.query.imageIds)
+            .map(
+              (image) =>
+                `data:${image.mime};base64,${image.data.toString('base64')}`,
+            ),
+        );
+        expect(
+          c.headers.every((h) => !new Headers(h).has('Authorization')),
+        ).toBe(true);
+        const user = c.store.addUser('Another evaluator');
+        const projected = c.store.labeling(body.run.id, user.id);
+        await c.app.request(`/api/images/${c.image.id}`, {
+          headers: { 'X-Local-User': user.id },
+        });
+        expect(c.store.exposure(body.run.id, user.id)).toBe('blind');
+        expect(projected.run).not.toHaveProperty('response');
+        expect(c.store.listExperiments()).toEqual([]);
+        expect(JSON.stringify(c.store.listSummaries(user.id))).not.toContain(
+          'base64',
+        );
+      } finally {
+        c.store.close();
+      }
+    },
+  );
   it.each([false, undefined])(
     'refuses images when vision=%s without an inference call',
     async (vision) => {
@@ -358,24 +391,32 @@ describe('image API and inference', () => {
       c.store.close();
     }
   });
-  it('preserves inputs and saves no run on upstream failure', async () => {
-    const c = await context(true, 422);
-    try {
-      expect(
-        (
-          await c.post('runs', {
-            title: 'Failed',
-            query: c.query,
-            provider: 'vision',
-          })
-        ).status,
-      ).toBe(422);
-      expect(c.store.listSummaries(c.store.actor())).toEqual([]);
-      expect(c.store.getImage(c.image.id).bytes).toBeGreaterThan(0);
-    } finally {
-      c.store.close();
-    }
-  });
+  it.each([
+    [400, true],
+    [422, true],
+    [501, true],
+    [422, false],
+  ] as const)(
+    'preserves images and saves no run on upstream failure %s (Clef=%s)',
+    async (status, clef) => {
+      const c = await context(true, status, clef);
+      try {
+        expect(
+          (
+            await c.post('runs', {
+              title: 'Failed',
+              query: c.query,
+              provider: 'vision',
+            })
+          ).status,
+        ).toBe(status === 501 ? 502 : 422);
+        expect(c.store.listSummaries(c.store.actor())).toEqual([]);
+        expect(c.store.getImage(c.image.id).bytes).toBeGreaterThan(0);
+      } finally {
+        c.store.close();
+      }
+    },
+  );
 });
 it('migrates schema 4, preserves JSON, restores backup, and cleans only expired unlinked images', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'image-db-'));

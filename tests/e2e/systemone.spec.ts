@@ -19,7 +19,9 @@ test('dynamic connections preserve editable models and saved fixed-model experim
     'edited-custom',
   );
   await page.getByLabel('Connection').selectOption('clef-local');
-  await expect(page.getByLabel('Model', { exact: true })).toHaveValue('clef');
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue(
+    'Clef-Flash-Q4_K_M.gguf',
+  );
   await expect(page.getByText(/judges questions jointly/)).toBeVisible();
   await expect(page.getByText(/Connected · clef/)).toBeVisible();
   await page
@@ -34,7 +36,9 @@ test('dynamic connections preserve editable models and saved fixed-model experim
   await expect(page.getByLabel('Connection')).toHaveValue('clef-local');
   await page.reload();
   await expect(page.getByLabel('Connection')).toHaveValue('clef-local');
-  await expect(page.getByLabel('Model', { exact: true })).toHaveValue('clef');
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue(
+    'Clef-Flash-Q4_K_M.gguf',
+  );
   await page.getByRole('button', { name: 'Run decision' }).click();
   await expect(
     page.getByRole('heading', { name: 'Blind evaluation', exact: true }),
@@ -93,4 +97,84 @@ test('late health response cannot overwrite the newly selected provider', async 
   release();
   await expect(page.getByText(/obsolete/)).toHaveCount(0);
   await expect(page.getByText(/Connected · strands-decider/)).toBeVisible();
+});
+
+test('shows the reported model file separately from its request alias and saves the artifact snapshot', async ({
+  page,
+}) => {
+  const mock = await mockApi(page, {
+    connections: true,
+    modelPath:
+      '/private/hub/models--ggml-org--Clef-Flash-GGUF/snapshots/6b4fe4c59098479652d94f0fe11a40facbebd1ec/Clef-Flash-Q4_K_M.gguf',
+  });
+  await page.goto('/');
+  await page.getByLabel('Connection').selectOption('clef-local');
+  await expect(page.getByText('Request model ID / alias: clef')).toBeVisible();
+  await expect(
+    page.locator('.editor').getByLabel('Model', { exact: true }),
+  ).toHaveValue('ggml-org/Clef-Flash-GGUF');
+  await expect(
+    page.locator('.editor').getByLabel('Model', { exact: true }),
+  ).toHaveAttribute('readonly', '');
+  await expect(page.locator('#request-model-identity')).toContainText(
+    'Clef-Flash-Q4_K_M.gguf',
+  );
+  await expect(page.locator('#request-model-identity')).toContainText(
+    '6b4fe4c59098479652d94f0fe11a40facbebd1ec',
+  );
+  await expect(
+    page.getByText('Model file (reported by server): Clef-Flash-Q4_K_M.gguf'),
+  ).toBeVisible();
+  await page
+    .getByLabel('Blind execution (hide answers until labels are finalized)')
+    .uncheck();
+  await page.getByRole('button', { name: 'Run decision' }).click();
+  await expect(
+    page
+      .locator('.metrics')
+      .getByText('ggml-org/Clef-Flash-GGUF', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator('.metrics').getByText('Response model ID / alias: clef'),
+  ).toBeVisible();
+  const saved = mock.store.getRun(
+    mock.store.listSummaries(mock.store.actor())[0].id,
+  );
+  expect(saved.execution?.modelArtifact).toBe('Clef-Flash-Q4_K_M.gguf');
+  expect(saved.execution?.modelIdentity?.name).toBe('ggml-org/Clef-Flash-GGUF');
+  expect(saved.response.model).toBe('clef');
+  expect(saved.query.model).toBe('clef');
+  expect(JSON.stringify(saved.execution)).not.toContain('/private');
+  await page.screenshot({
+    path: '/tmp/clef-model-artifact.png',
+    fullPage: true,
+  });
+});
+
+test('keeps unknown runtime identity explicit in the request editor and retains the request alias', async ({
+  page,
+}) => {
+  await mockApi(page, { connections: true, modelPath: null });
+  await page.goto('/');
+  await page.getByLabel('Connection').selectOption('clef-local');
+  await expect(page.getByText('Connected · clef')).toBeVisible();
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue(
+    'Unknown — runtime did not provide identity',
+  );
+  await expect(page.locator('#request-model-identity')).toContainText(
+    'Request model ID / alias: clef',
+  );
+  await expect(page.locator('#request-model-identity')).toContainText(
+    'does not identify the model weights',
+  );
+  await page.getByRole('button', { name: 'JSON', exact: true }).click();
+  expect(
+    JSON.parse(await page.getByLabel('Request JSON').inputValue()).model,
+  ).toBe('clef');
+  await page
+    .getByLabel('Request JSON')
+    .fill(JSON.stringify({ ...initialQuery, model: 'other' }));
+  await expect(page.getByLabel('Model', { exact: true })).toHaveValue(
+    'Unknown — request model differs from runtime',
+  );
 });

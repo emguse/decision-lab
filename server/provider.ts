@@ -1,5 +1,9 @@
 import type { Connection } from './connections.js';
-import type { ProviderConfig, ProviderHealth } from '../shared/providers.js';
+import type {
+  ProviderConfig,
+  ProviderHealth,
+  ModelIdentity,
+} from '../shared/providers.js';
 import {
   validateResponse,
   type DecisionInput,
@@ -18,7 +22,12 @@ export interface DecisionProvider {
   evaluate(query: DecisionInput): Promise<
     DecisionResponse & {
       rawResponse?: unknown;
-      executionInfo?: { device?: string; baseModel?: string };
+      executionInfo?: {
+        device?: string;
+        baseModel?: string;
+        modelArtifact?: string;
+        modelIdentity?: ModelIdentity;
+      };
     }
   >;
 }

@@ -13,6 +13,9 @@ test('edit, invalid JSON, execute, save and reload', async ({ page }) => {
   await expect(
     page.getByRole('button', { name: 'Run decision' }),
   ).toBeDisabled();
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'Request JSON is invalid',
+  );
   await page.getByLabel('Request JSON').fill(valid);
   await page.getByRole('button', { name: 'Form', exact: true }).click();
   await expect(page.getByLabel('Input text', { exact: true })).toHaveValue(

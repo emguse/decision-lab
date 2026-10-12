@@ -9,6 +9,10 @@ import { Store } from '../server/store';
 import { initialQuery, validateResponse } from '../shared/schema';
 import { executionMetadataSchema } from '../shared/providers';
 import { fixture } from './fixture';
+import sharp from 'sharp';
+import { validateImage } from '../server/images';
+import { parse as parseYaml } from 'yaml';
+import { serializeDocument } from '../shared/exchange';
 const source = readFileSync('systemone.example.toml', 'utf8');
 const connection = parseConnections(source)[0];
 const query = {
@@ -81,7 +85,12 @@ it('loads opt-in TOML, validates security constraints, and omits configuration s
 it('checks native decision readiness, sends unchanged queries without cloud keys, and preserves raw usage', async () => {
   const f = fetcher({ ...response, usage: undefined });
   const p = new SystemOneProvider(connection, undefined, f);
-  expect(await p.health()).toEqual({ status: 'ready', model: 'clef' });
+  expect(await p.health()).toEqual({
+    status: 'ready',
+    model: 'clef',
+    vision: false,
+    imageBlockReason: 'missing_image_capability',
+  });
   const result = await p.evaluate(query);
   expect(result.usage).toEqual({});
   expect(result.rawResponse).not.toHaveProperty('usage');
@@ -163,7 +172,39 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
   const dir = mkdtempSync(join(tmpdir(), 'systemone-'));
   let store = await Store.open(join(dir, 'runs.sqlite'));
   try {
-    const p = new SystemOneProvider(connection, undefined, fetcher());
+    const imageBytes = await sharp({
+      create: { width: 2, height: 2, channels: 3, background: '#f00' },
+    })
+      .png()
+      .toBuffer();
+    const image = store.saveImage(
+      imageBytes,
+      await validateImage(imageBytes),
+      store.actor(),
+    );
+    const imageQuery = { ...query, imageIds: [image.id] };
+    const f = fetcher();
+    const p = new SystemOneProvider(connection, undefined, async (url, init) =>
+      String(url).endsWith('/v1/models')
+        ? Response.json({
+            data: [
+              {
+                id: 'clef',
+                architecture: {
+                  input_modalities: ['text', 'image'],
+                  output_modalities: ['decisions'],
+                },
+              },
+            ],
+          })
+        : String(url).endsWith('/props')
+          ? Response.json({
+              model_alias: 'clef',
+              model_path:
+                '/private/hub/models--ggml-org--Clef-Flash-GGUF/snapshots/6b4fe4c59098479652d94f0fe11a40facbebd1ec/Clef-Flash-Q4_K_M.gguf',
+            })
+          : f(url, init),
+    );
     const cloud = vi.fn(async () => validateResponse(response, query));
     const app = createApp(store, { evaluate: cloud }, false, [p]);
     const send = (path: string, body: unknown) =>
@@ -180,7 +221,7 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
     expect(config).not.toContain('api_key_env');
     const result = await send('/api/runs', {
       title: 'Clef',
-      query,
+      query: imageQuery,
       provider: connection.id,
       blind: true,
     });
@@ -192,6 +233,7 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
       formatVersion: 2,
       provider: connection.id,
       questionInteraction: 'joint',
+      modelArtifact: 'Clef-Flash-Q4_K_M.gguf',
     });
     expect(store.getRun(id).rawResponse).toEqual(response);
     const other = store.addUser('Second evaluator');
@@ -202,13 +244,37 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
     );
     await send('/api/experiments', {
       title: 'Saved',
-      query,
+      query: imageQuery,
       provider: connection.id,
     });
     expect(cloud).not.toHaveBeenCalled();
     store.close();
     store = await Store.open(join(dir, 'runs.sqlite'));
-    expect(store.getRun(id).query).toEqual(query);
+    expect(store.getRun(id).query).toEqual(imageQuery);
+    expect(store.getRun(id).execution?.modelArtifact).toBe(
+      'Clef-Flash-Q4_K_M.gguf',
+    );
+    const identity = {
+      name: 'ggml-org/Clef-Flash-GGUF',
+      artifact: 'Clef-Flash-Q4_K_M.gguf',
+      repositoryRevision: '6b4fe4c59098479652d94f0fe11a40facbebd1ec',
+      source: 'llamacpp_props',
+    };
+    const recorded = store.getRun(id).execution!;
+    expect(recorded.modelIdentity).toEqual(identity);
+    expect(recorded.requestedModel).toBe('clef');
+    expect(recorded.resolvedModel).toBe('clef');
+    for (const format of ['json', 'yaml'] as const) {
+      const exported = serializeDocument(recorded, format);
+      expect(exported).not.toContain('/private');
+      expect(
+        executionMetadataSchema.parse(
+          format === 'json' ? JSON.parse(exported) : parseYaml(exported),
+        ).modelIdentity,
+      ).toEqual(identity);
+    }
+    expect(store.getImage(image.id).data).toEqual(imageBytes);
+    expect(store.listExperiments()[0].query.imageIds).toEqual([image.id]);
     expect(store.listExperiments()[0].provider).toBe(connection.id);
     const removed = createApp(store, { evaluate: cloud }, false);
     expect(
@@ -235,6 +301,51 @@ it('persists format 2 across reopen and configuration removal; keeps each evalua
     store.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+it('treats model-file metadata as optional, preserves aliases, and never exposes local paths', async () => {
+  for (const props of [
+    {
+      model_path: '/private/models/Clef-Flash-Q4_K_M.gguf',
+      model_alias: 'clef',
+    },
+    {
+      model_path: 'C:\\private\\models\\Clef-Flash-Q4_K_M.gguf',
+      model_alias: 'clef',
+    },
+    { model_path: '/private/models/other.gguf', model_alias: 'other' },
+    { model_path: 123 },
+    null,
+  ]) {
+    const f = fetcher();
+    const p = new SystemOneProvider(connection, undefined, async (url, init) =>
+      String(url).endsWith('/props') ? Response.json(props) : f(url, init),
+    );
+    const health = await p.health();
+    expect(health.status).toBe('ready');
+    expect(JSON.stringify(health)).not.toContain('private');
+    const result = await p.evaluate(query);
+    expect(result.model).toBe('clef');
+    expect(result.rawResponse).toEqual(response);
+    expect(JSON.parse(String(f.mock.calls.at(-1)?.[1]?.body)).model).toBe(
+      'clef',
+    );
+    expect(result.executionInfo?.modelArtifact).toBe(
+      props &&
+        typeof props.model_path === 'string' &&
+        props.model_alias === 'clef'
+        ? 'Clef-Flash-Q4_K_M.gguf'
+        : undefined,
+    );
+  }
+  const f = fetcher();
+  const p = new SystemOneProvider(connection, undefined, async (url, init) => {
+    if (String(url).endsWith('/props'))
+      throw new Error('Unavailable private path');
+    return f(url, init);
+  });
+  expect((await p.health()).status).toBe('ready');
+  expect((await p.evaluate(query)).model).toBe('clef');
 });
 
 it('preserves structured instructions and criteria, including native structured Score legends', async () => {
@@ -282,4 +393,72 @@ it('preserves structured instructions and criteria, including native structured 
   );
   expect(JSON.parse(String(f.mock.calls.at(-1)![1]?.body))).toEqual(q);
   expect(result.rawResponse).toEqual(raw);
+});
+
+it('rechecks image capability before each request and rejects router metadata, missing projectors and changed models', async () => {
+  const imageInput = {
+    ...query,
+    images: [{ mime: 'image/png', data: new Uint8Array([1, 2, 3]) }],
+  };
+  const capable = {
+    id: 'clef',
+    architecture: {
+      input_modalities: ['text', 'image'],
+      output_modalities: ['decisions'],
+    },
+  };
+  let data: unknown[] = [capable];
+  let returnedModel = 'clef';
+  const f = vi.fn<typeof fetch>(async (url) =>
+    Response.json(
+      String(url).endsWith('/health')
+        ? { status: 'ok' }
+        : String(url).endsWith('/v1/models')
+          ? { data }
+          : { ...response, model: returnedModel },
+    ),
+  );
+  const p = new SystemOneProvider(connection, undefined, f);
+  expect(await p.health()).toMatchObject({ status: 'ready', vision: true });
+  await p.evaluate(imageInput);
+  for (const models of [
+    [{ id: 'clef', architecture: { output_modalities: ['decisions'] } }],
+    [
+      {
+        ...capable,
+        architecture: {
+          input_modalities: ['text'],
+          output_modalities: ['decisions'],
+        },
+      },
+    ],
+    [{ ...capable, status: { value: 'unloaded' } }],
+    [{ ...capable, status: { value: 'loaded' } }],
+    [capable, { ...capable, id: 'other' }],
+    [{ ...capable, id: 'other' }],
+    [
+      {
+        ...capable,
+        architecture: {
+          input_modalities: ['image'],
+          output_modalities: ['text'],
+        },
+      },
+    ],
+  ]) {
+    data = models;
+    f.mockClear();
+    await expect(p.evaluate(imageInput)).rejects.toMatchObject({
+      code: expect.stringMatching(/^(images_unsupported|model_unavailable)$/),
+    });
+    expect(f.mock.calls.every((call) => !call[1]?.body)).toBe(true);
+  }
+  data = [capable];
+  returnedModel = 'changed';
+  await expect(p.evaluate(imageInput)).rejects.toMatchObject({
+    code: 'invalid_response',
+  });
+  await expect(
+    p.evaluate({ ...imageInput, model: 'other' }),
+  ).rejects.toMatchObject({ code: 'model_mismatch' });
 });

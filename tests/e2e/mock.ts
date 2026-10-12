@@ -12,6 +12,8 @@ export async function mockApi(
   page: Page,
   options: {
     connections?: boolean;
+    clefRouter?: boolean;
+    modelPath?: string | null;
     failure?: boolean;
     delay?: number;
     local?: boolean;
@@ -104,12 +106,28 @@ model = "custom-default"
               new SystemOneProvider(c, undefined, async (url, init) => {
                 if (String(url).endsWith('/health'))
                   return Response.json({ status: 'ok' });
+                if (String(url).endsWith('/props'))
+                  return Response.json({
+                    model_alias: 'clef',
+                    model_path:
+                      options.modelPath === undefined
+                        ? '/private/models/Clef-Flash-Q4_K_M.gguf'
+                        : options.modelPath,
+                  });
                 if (String(url).endsWith('/v1/models'))
                   return Response.json({
                     data: [
                       {
                         id: 'clef',
-                        architecture: { output_modalities: ['decisions'] },
+                        ...(options.clefRouter
+                          ? { status: { value: 'loaded' } }
+                          : {}),
+                        architecture: {
+                          input_modalities: options.vision
+                            ? ['text', 'image']
+                            : ['text'],
+                          output_modalities: ['decisions'],
+                        },
                       },
                     ],
                   });

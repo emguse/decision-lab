@@ -13,55 +13,64 @@ async function image(width = 2) {
       .toBuffer(),
   };
 }
-test('selects, reorders, saves, restores and labels images without leaking predictions', async ({
-  page,
-}) => {
-  const api = await mockApi(page, {
-    local: true,
-    vision: true,
-    localModel: model,
+for (const clef of [false, true]) {
+  test(`selects, reorders, saves, restores and labels images without leaking predictions (Clef=${clef})`, async ({
+    page,
+  }) => {
+    const api = await mockApi(page, {
+      local: true,
+      connections: clef,
+      vision: true,
+      localModel: model,
+    });
+    await page.goto('/');
+    await page
+      .getByLabel('Connection', { exact: true })
+      .selectOption(clef ? 'clef-local' : 'strands-local');
+    await page
+      .getByLabel('Add images')
+      .setInputFiles([await image(), await image(3)]);
+    await expect(page.getByAltText('Input image 2')).toBeVisible();
+    await page.getByLabel('Move image 2 left').click();
+    await page
+      .getByRole('button', { name: 'Save experiment', exact: true })
+      .click();
+    await expect(
+      page.getByText('Experiment saved.', { exact: true }),
+    ).toBeVisible();
+    const saved = api.store.listExperiments()[0];
+    expect(saved.query.imageIds).toHaveLength(2);
+    await page.getByLabel('Remove image 1').click();
+    await expect(page.getByAltText('Input image 2')).toHaveCount(0);
+    await page
+      .locator('.history')
+      .filter({ hasText: saved.title })
+      .first()
+      .click();
+    await expect(page.getByAltText('Input image 2')).toBeVisible();
+    if (clef)
+      await page.screenshot({
+        path: '/tmp/clef-image-input.png',
+        fullPage: true,
+      });
+    await page.getByRole('button', { name: 'Run decision ↗' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Input and human reference labels' }),
+    ).toBeVisible();
+    await expect(page.getByAltText('Input image 2')).toBeVisible();
+    const blind = api.bodies.find((b) => b.path === '/api/runs')?.body as {
+      run: object;
+    };
+    expect(blind.run).not.toHaveProperty('response');
+    expect(api.localCalls()).toBe(1);
   });
-  await page.goto('/');
-  await page
-    .getByLabel('Connection', { exact: true })
-    .selectOption('strands-local');
-  await page
-    .getByLabel('Add images')
-    .setInputFiles([await image(), await image(3)]);
-  await expect(page.getByAltText('Input image 2')).toBeVisible();
-  await page.getByLabel('Move image 2 left').click();
-  await page
-    .getByRole('button', { name: 'Save experiment', exact: true })
-    .click();
-  await expect(
-    page.getByText('Experiment saved.', { exact: true }),
-  ).toBeVisible();
-  const saved = api.store.listExperiments()[0];
-  expect(saved.query.imageIds).toHaveLength(2);
-  await page.getByLabel('Remove image 1').click();
-  await expect(page.getByAltText('Input image 2')).toHaveCount(0);
-  await page
-    .locator('.history')
-    .filter({ hasText: saved.title })
-    .first()
-    .click();
-  await expect(page.getByAltText('Input image 2')).toBeVisible();
-  await page.getByRole('button', { name: 'Run decision ↗' }).click();
-  await expect(
-    page.getByRole('heading', { name: 'Input and human reference labels' }),
-  ).toBeVisible();
-  await expect(page.getByAltText('Input image 2')).toBeVisible();
-  const blind = api.bodies.find((b) => b.path === '/api/runs')?.body as {
-    run: object;
-  };
-  expect(blind.run).not.toHaveProperty('response');
-  expect(api.localCalls()).toBe(1);
-});
+}
 test('retains attachments on unsupported connections, and supports drop and paste', async ({
   page,
 }) => {
   const api = await mockApi(page, {
     local: true,
+    connections: true,
     vision: true,
     localModel: model,
   });
@@ -82,6 +91,9 @@ test('retains attachments on unsupported connections, and supports drop and past
   await expect(
     page.getByRole('button', { name: 'Run decision ↗' }),
   ).toBeDisabled();
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'does not accept image attachments',
+  );
   await page
     .getByRole('region', { name: 'Image attachments' })
     .evaluate((el, bytes) => {
@@ -101,11 +113,103 @@ test('retains attachments on unsupported connections, and supports drop and past
     page.getByRole('button', { name: 'Run decision ↗' }),
   ).toBeEnabled();
   expect(api.calls()).toBe(0);
+  await page
+    .getByLabel('Connection', { exact: true })
+    .selectOption('clef-local');
+  await expect(
+    page.getByRole('button', { name: 'Run decision ↗' }),
+  ).toBeEnabled();
   await page.getByLabel('Connection', { exact: true }).selectOption('jev');
   await expect(page.getByAltText('Input image 2')).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Run decision ↗' }),
   ).toBeDisabled();
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'does not accept image attachments',
+  );
+});
+test('explains router image blocking beside Run and clears the reason after switching to direct mode', async ({
+  page,
+}) => {
+  const options = { connections: true, vision: true, clefRouter: true };
+  const api = await mockApi(page, options);
+  await page.goto('/');
+  await page
+    .getByLabel('Connection', { exact: true })
+    .selectOption('clef-local');
+  await page.getByLabel('Add images').setInputFiles(await image());
+  const run = page.getByRole('button', { name: 'Run decision ↗' });
+  await expect(run).toBeDisabled();
+  await expect(run).toHaveAttribute('aria-describedby', 'run-disabled-reasons');
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'This app currently disables image runs through the router',
+  );
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'systemone.toml',
+  );
+  expect(api.localCalls()).toBe(0);
+  await page.screenshot({ path: '/tmp/clef-run-disabled.png', fullPage: true });
+  options.clefRouter = false;
+  await page
+    .getByRole('button', { name: 'Check connection', exact: true })
+    .click();
+  await expect(run).toBeEnabled();
+  await expect(page.locator('#run-disabled-reasons')).toHaveCount(0);
+  await expect(page.getByAltText('Input image 1')).toBeVisible();
+});
+for (const vision of [false, undefined]) {
+  test(`explains Strands image capability blocking (vision=${vision})`, async ({
+    page,
+  }) => {
+    await mockApi(page, { local: true, vision, localModel: model });
+    await page.goto('/');
+    await page
+      .getByLabel('Connection', { exact: true })
+      .selectOption('strands-local');
+    await page.getByLabel('Add images').setInputFiles(await image());
+    await expect(
+      page.getByRole('button', { name: 'Run decision ↗' }),
+    ).toBeDisabled();
+    await expect(page.locator('#run-disabled-reasons')).toContainText(
+      vision === false
+        ? 'reports vision: false'
+        : 'did not report vision capability',
+    );
+    await expect(page.locator('#run-disabled-reasons')).toContainText(
+      '--vision',
+    );
+  });
+}
+test('Clef text remains available without image capability and retains unsupported attachments', async ({
+  page,
+}) => {
+  const api = await mockApi(page, { connections: true, vision: false });
+  await page.goto('/');
+  await page
+    .getByLabel('Connection', { exact: true })
+    .selectOption('clef-local');
+  await expect(
+    page.getByRole('button', { name: 'Run decision ↗' }),
+  ).toBeEnabled();
+  await page.getByLabel('Add images').setInputFiles(await image());
+  await expect(page.getByAltText('Input image 1')).toBeVisible();
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'did not advertise image input',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Run decision ↗' }),
+  ).toBeDisabled();
+  await page
+    .getByRole('button', { name: 'Save experiment', exact: true })
+    .click();
+  await expect(
+    page.getByText('Experiment saved.', { exact: true }),
+  ).toBeVisible();
+  expect(api.localCalls()).toBe(0);
+  await page.getByLabel('Remove image 1').click();
+  await expect(
+    page.getByRole('button', { name: 'Run decision ↗' }),
+  ).toBeEnabled();
 });
 test('image references round-trip through JSON and block invalid requests', async ({
   page,

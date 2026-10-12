@@ -74,6 +74,8 @@ timeout_ms = 60000
 question_interaction = "joint"
 ```
 
+The request `model` is the server's public model ID or alias, not necessarily its repository name. For `--alias clef`, use `model = "clef"` in TOML. The connection panel shows that request alias separately from the actual GGUF filename reported by a direct server's optional `/props` endpoint. New runs snapshot the filename as `modelArtifact` and the runtime-reported identity as `modelIdentity`. `modelIdentity.name` records the repository name when a recognized Hugging Face snapshot cache path is reported, otherwise the GGUF filename. `artifact` records the quantized GGUF filename, `repositoryRevision` records the reported snapshot revision when available, and `source = "llamacpp_props"` identifies the provenance. These fields persist through database reopen and execution-metadata JSON/YAML serialization. Request and response aliases remain separate in `requestedModel`/`resolvedModel` and original wire data. Result views use the recorded identity. Cache-derived repository/revision values are runtime-reported provenance, not verification of file contents; absent identity remains unknown and is not reconstructed from an alias. Full local paths are never returned. If metadata is unavailable or refers to another alias, inference still works and the alias remains the displayed model; a filename is runtime-reported provenance, not proof of an exact weight revision. Existing runs retain their original snapshots.
+
 The model alias and port must match the separately started server. Choose this connection in Playground after restarting Node/Hono. For readiness checks and router mode, see [Clef runtime and readiness](#clef-runtime-and-readiness).
 
 ## Details
@@ -129,7 +131,7 @@ The example TOML uses model alias `clef` and port 8080. The app checks `/health`
 Older runtimes without that metadata cannot pass this adapter's readiness check.
 Clef's full prompt must fit in `--ubatch-size`; 4096 is an example, not a guarantee
 for every input. See the [v0.6.0 server documentation](https://github.com/ggml-org/llama.cpp/blob/v0.6.0/tools/server/README.md).
-The current Clef connection supports text/JSON only; image attachments are supported through the Strands connection. Clef jointly
+Direct Clef connections also support image attachments when the selected model advertises `image` input and `decisions` output. Load its compatible multimodal projector with `--mmproj /path/to/mmproj.gguf`. The adapter rechecks readiness and image capability before every execution, forwards original images as ordered Data URLs in `images`, and rejects unsupported input without dropping attachments. Missing input metadata means images are unsupported; text remains available. Clef jointly
 judges questions in one request, so changing one question can affect other answers.
 No per-question splitting or semantic criteria conversion is performed. Structured
 Score legends are preserved and displayed as JSON.
@@ -141,6 +143,34 @@ Set `timeout_ms = 300000` if cold loading exceeds the default 60 seconds and
 restart Node/Hono after editing the file. Router readiness checks confirm the
 model ID and decision capability; they do not force model loading. The first
 inference request can therefore take longer than subsequent requests.
+
+### Clef image inference
+
+Use a recent llama.cpp build implementing the [official image contract](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1systemone-typesafe-compatible-system-one-api), an image-capable Clef GGUF, and its matching projector. Start a fixed-model direct server, for example:
+
+```sh
+llama-server --model /path/to/clef.gguf --mmproj /path/to/mmproj.gguf --alias clef --host 127.0.0.1 --port 8080 --ubatch-size 4096 --batch-size 4096
+```
+
+A working direct-server command reported by the user on 2026-10-12 is:
+
+```sh
+llama serve -hf ggml-org/Clef-Flash-GGUF:Q4_K_M --alias clef --host 127.0.0.1 --port 8080 --ubatch-size 4096 --batch-size 4096
+```
+
+For this setup, use `model = "clef"` in TOML. The inspected running server reports `Clef-Flash-Q4_K_M.gguf` and image/decision capability; its startup log confirms automatic loading of `mmproj-Clef-Flash-Q8_0.gguf`. A successful model load does not guarantee every image prompt will fit the batch budget.
+
+Paths and batch sizes are examples; choose them for the model and available memory. The entire prompt, including image tokens and all questions, must fit in `--ubatch-size`. The application cannot calculate this budget from image dimensions and does not truncate or retry rejected requests. Runtime failures retain input and save no successful Run. `joint` interaction remains visible and saved.
+
+Image support is limited to a single-model direct server. Model lists with router `status` metadata or multiple entries do not enable image execution, even if they advertise image capability; router text behavior is unchanged. Capability advertised by a router is not proof that its model/projector is loaded.
+
+The existing four-image, static PNG/JPEG/WebP limits and format 2 image storage apply; no database migration is needed. To verify a separately prepared local instance through Hono, including saved originals and blind labels:
+
+```sh
+DECISION_TEST_CONNECTION_ID=clef-local npm run test:images:local -- /absolute/path/to/image.png
+```
+
+This saves image and text smoke runs. Automated mocks verify ordering, capability loss, missing projector metadata, unsupported models, changed models, upstream rejection, persistence and blind projections. On 2026-10-11, the agent verified `ggml-org/Clef-Flash-GGUF:Q4_K_M` through its already loaded direct child server (the user's port 8080 remains a router). A 32×32 generated red PNG with Noul/Choice/Score questions completed in 11.6 seconds with 285 input tokens. Hono requests against an isolated temporary SQLite store verified upload, original-byte retrieval, blind finalization, second-evaluator isolation, saved Experiment references, and database reopen. Existing configuration and user data were unchanged. This single smoke input confirms the integration, not general accuracy, overflow limits, sustained performance, or a stable child port; use a separately started fixed-model server for normal operation.
 
 ### Saved execution metadata
 
@@ -184,7 +214,7 @@ Images require the Qwen3.5-based `StrandsAgents/strands-decider-2B-qwen3.5-v1-26
 Prepare a separate Python virtual environment, then install the pinned source with its vision extra:
 
 ```sh
-uv pip install 'strands-decider[vision] @ git+https://github.com/strands-labs/strands-decider.git@0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534' 'transformers>=5.18,<6'
+uv add 'strands-decider[vision] @ git+https://github.com/strands-labs/strands-decider.git@0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534' 'transformers>=5.18,<6'
 strands-decider serve --help
 strands-decider serve StrandsAgents/strands-decider-2B-qwen3.5-v1-2610 \
   --vision --strict-window --device mps --host 127.0.0.1 --port 8012
@@ -192,7 +222,7 @@ strands-decider serve StrandsAgents/strands-decider-2B-qwen3.5-v1-2610 \
 
 Confirm the CLI exposes these options, then confirm `/health` reports the configured model and `vision: true` before an image run. Vision requires transformers 5.18 or later and uses torch devices MPS, CPU, or CUDA; MLX is unsupported. Select the device appropriate to your separately managed environment. The vision tower adds memory overhead; measure cold/warm runtime and memory on the target machine. Model/base weights are downloaded by the Python runtime, outside npm and the application UI.
 
-The application forwards images only to a configured Strands loopback endpoint, without Jev credentials or redirects. It refuses unsupported connections and absent/false vision capability, with no automatic fallback. Strict-window overflow and upstream failures retain the editor input but create no successful saved Run. Existing text requests do not require the `vision` health field.
+The Strands adapter forwards images only to its configured loopback endpoint, without Jev credentials or redirects. It refuses unsupported connections and absent/false vision capability, with no automatic fallback. Strict-window overflow and upstream failures retain the editor input but create no successful saved Run. Existing text requests do not require the `vision` health field.
 
 At the time of verification, PyPI published only `strands-decider 0.1.0`, whose extras are `train` and `dev`; it does not contain the vision path. Installing `strands-decider[vision]` from PyPI alone does not enable images. Quote the requirement in zsh to prevent `[vision]` being interpreted as a filename pattern.
 

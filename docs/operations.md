@@ -39,7 +39,7 @@ The server uses Node's built-in SQLite (`node:sqlite`); the database defaults to
 
 Requests go to `POST https://api.typesafe.ai/v1/systemone` with server-side Bearer authentication. Each execution makes one request, with a 60-second timeout and no automatic retries. Concurrent executions are rejected. A timed-out request may still incur provider usage. If local persistence fails after a successful API call, execution reports an error; rerunning makes another paid request.
 
-The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for trusted local users, not public hosting. Draft saves do not call the provider. Image input and AI drafting are future extensions. Suite execution and YAML/JSON exchange are available through the Suites workspace. Text/JSON Clef connections are available through TOML settings. Local Strands inference runs through a separate Python HTTP server. Evaluation labels saved single-query and Suite results without another model request.
+The browser receives only readiness status, never the key. Foreign browser origins are rejected. This app is intended for trusted local users, not public hosting. Draft saves do not call the provider. Image input is available through image-capable Strands and direct llama.cpp connections; AI drafting is a future extension. Suite execution and YAML/JSON exchange are available through the Suites workspace. Clef connections are available through TOML settings. Local Strands inference runs through a separate Python HTTP server. Evaluation labels saved single-query and Suite results without another model request.
 
 ## Database versions, backup, and recovery
 

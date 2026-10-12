@@ -265,11 +265,14 @@ export function createApp(
     )?.connection;
     const start = performance.now();
     const { imageIds, ...textInput } = query;
-    if (imageIds?.length && connection?.adapter !== 'strands')
+    if (
+      imageIds?.length &&
+      !['strands', 'llamacpp'].includes(connection?.adapter ?? '')
+    )
       throw new ProviderError(
         422,
         'images_unsupported',
-        'This connection does not support images. Select a Strands vision connection.',
+        'This connection does not support images. Select an image-capable Strands or direct llama.cpp connection.',
       );
     const images = store.resolveImages(imageIds);
     const output = await selected.evaluate({

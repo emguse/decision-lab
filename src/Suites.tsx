@@ -232,6 +232,13 @@ export function SuitesWorkspace({
           <button onClick={onHelp}>Read the guide</button>
         </div>
       </header>
+      <div className="setup" aria-label="Suite image support">
+        <strong>
+          Image inputs are not yet supported in Experiment suites.
+        </strong>{' '}
+        Suites accept text/JSON cases only. Use Playground for image runs and
+        human evaluation. Image import/export is not yet supported.
+      </div>
       {error && (
         <div className="alert" role="alert">
           {error}

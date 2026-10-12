@@ -36,6 +36,12 @@ test('imports YAML/JSON, runs a Suite blind, grades independently, and exports a
   const mock = await mockApi(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Suites', exact: true }).click();
+  await expect(page.getByLabel('Suite image support')).toContainText(
+    'Image inputs are not yet supported in Experiment suites.',
+  );
+  await expect(page.getByLabel('Suite image support')).toContainText(
+    'Use Playground',
+  );
   await expect(page.getByText('No file selected', { exact: true })).toHaveCount(
     2,
   );

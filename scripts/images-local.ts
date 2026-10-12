@@ -22,12 +22,16 @@ try {
   const path = process.argv[2];
   if (!path) throw new Error('Pass a local PNG, JPEG or WebP path.');
   const config = await request('config');
-  if (config.providers[connectionId]?.adapter !== 'strands')
-    throw new Error('Select a configured Strands connection.');
+  if (
+    !['strands', 'llamacpp'].includes(config.providers[connectionId]?.adapter)
+  )
+    throw new Error(
+      'Select a configured Strands or direct llama.cpp connection.',
+    );
   const health = await request(`providers/${connectionId}/health`);
   if (health.status !== 'ready' || health.vision !== true)
     throw new Error(
-      'Start the configured Python server with --vision before this check.',
+      'Start an image-capable Strands (--vision) or direct llama.cpp (--mmproj) server before this check.',
     );
   const data = await readFile(path);
   const form = new FormData();

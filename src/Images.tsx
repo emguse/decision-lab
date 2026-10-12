@@ -189,8 +189,8 @@ export function ImageAttachments({
       </label>
       <p className="hint">
         Select, drop or paste images here. Static PNG / JPEG / WebP · 5 MiB each
-        · 4096 px per side. Strands requires --vision; inference scales images
-        to 448 px.
+        · 4096 px per side. Strands requires --vision and scales images to 448
+        px; direct llama.cpp requires a compatible model and --mmproj.
       </p>
       {uploading && <p role="status">Uploading images…</p>}
       {error && (
