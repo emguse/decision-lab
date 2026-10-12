@@ -16,6 +16,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { ImageInfo } from './images.js';
 import type { Run, Query } from '../shared/schema.js';
 import {
   emptyDraft,
@@ -34,7 +35,7 @@ export class StoreError extends Error {
     super(message);
   }
 }
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 const legacy = 'legacy-unknown';
 const migrations = [
   `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -51,6 +52,10 @@ const migrations = [
  CREATE TABLE suite_executions(id TEXT PRIMARY KEY,suite_id TEXT NOT NULL REFERENCES exchange_documents(id),body TEXT NOT NULL);
  CREATE TABLE suite_run_links(run_id TEXT PRIMARY KEY REFERENCES runs(id),execution_id TEXT NOT NULL REFERENCES suite_executions(id),case_id TEXT NOT NULL,UNIQUE(execution_id,case_id));
  CREATE TABLE expected_exposures(suite_id TEXT NOT NULL REFERENCES exchange_documents(id),user_id TEXT NOT NULL REFERENCES users(id),seen_at TEXT NOT NULL,PRIMARY KEY(suite_id,user_id));`,
+  `CREATE TABLE image_blobs(id TEXT PRIMARY KEY,hash TEXT NOT NULL UNIQUE,mime TEXT NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,bytes INTEGER NOT NULL,data BLOB NOT NULL,last_used TEXT NOT NULL);
+ CREATE TABLE image_uploads(image_id TEXT NOT NULL REFERENCES image_blobs(id) ON DELETE CASCADE,user_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,PRIMARY KEY(image_id,user_id));
+ CREATE TABLE run_images(run_id TEXT NOT NULL REFERENCES runs(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(run_id,position));
+ CREATE TABLE experiment_images(experiment_id TEXT NOT NULL REFERENCES experiments(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(experiment_id,position));`,
 ];
 export class Store {
   private db: DatabaseSync;
@@ -107,6 +112,7 @@ export class Store {
           this.db.exec(`PRAGMA user_version=${version + 1}`);
         });
       this.db.exec('PRAGMA journal_mode=WAL;');
+      this.cleanupImages();
     } catch (e) {
       this.db.close();
       throw e;
@@ -122,6 +128,94 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw e;
     }
+  }
+  saveImage(
+    data: Buffer,
+    info: Omit<ImageInfo, 'id'> & { hash: string },
+    actor: string,
+  ): ImageInfo {
+    this.actor(actor);
+    return this.transaction(() => {
+      const existing = this.db
+        .prepare('SELECT id FROM image_blobs WHERE hash=?')
+        .get(info.hash);
+      const id = existing ? String(existing.id) : randomUUID();
+      const now = new Date().toISOString();
+      if (!existing)
+        this.db
+          .prepare('INSERT INTO image_blobs VALUES (?,?,?,?,?,?,?,?)')
+          .run(
+            id,
+            info.hash,
+            info.mime,
+            info.width,
+            info.height,
+            info.bytes,
+            data,
+            now,
+          );
+      this.db
+        .prepare('UPDATE image_blobs SET last_used=? WHERE id=?')
+        .run(now, id);
+      this.db
+        .prepare('INSERT OR IGNORE INTO image_uploads VALUES (?,?,?)')
+        .run(id, actor, now);
+      return {
+        id,
+        mime: info.mime,
+        width: info.width,
+        height: info.height,
+        bytes: info.bytes,
+      };
+    });
+  }
+  getImage(id: string): ImageInfo & { data: Buffer } {
+    const row = this.db
+      .prepare(
+        'SELECT id,mime,width,height,bytes,data FROM image_blobs WHERE id=?',
+      )
+      .get(id);
+    if (!row)
+      throw new StoreError(404, 'Image was not found. Upload it again.');
+    this.db
+      .prepare('UPDATE image_blobs SET last_used=? WHERE id=?')
+      .run(new Date().toISOString(), id);
+    return {
+      id: String(row.id),
+      mime: String(row.mime),
+      width: Number(row.width),
+      height: Number(row.height),
+      bytes: Number(row.bytes),
+      data: Buffer.from(row.data as Uint8Array),
+    };
+  }
+  resolveImages(ids: string[] = []) {
+    return ids.map((id) => this.getImage(id));
+  }
+  cleanupImages(now = Date.now()) {
+    this.db
+      .prepare(
+        `DELETE FROM image_blobs WHERE last_used < ? AND NOT EXISTS(SELECT 1 FROM run_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM experiment_images WHERE image_id=image_blobs.id)`,
+      )
+      .run(new Date(now - 7 * 86400000).toISOString());
+  }
+  private linkImages(id: string, entity: 'run' | 'experiment', ids?: string[]) {
+    if (!ids?.length) return;
+    ids.forEach((imageId, position) => {
+      this.getImage(imageId);
+      this.db
+        .prepare(
+          entity === 'run'
+            ? 'INSERT INTO run_images VALUES (?,?,?)'
+            : 'INSERT INTO experiment_images VALUES (?,?,?)',
+        )
+        .run(id, position, imageId);
+    });
+    this.db
+      .prepare(
+        'UPDATE attribution SET format_version=2 WHERE id=? AND entity=?',
+      )
+      .run(id, entity);
   }
   listUsers(): LocalUser[] {
     return this.db
@@ -147,7 +241,7 @@ export class Store {
       .prepare('SELECT * FROM attribution WHERE id=? AND entity=?')
       .get(id, entity);
     if (!r) throw new StoreError(404, 'Saved data was not found.');
-    if (Number(r.format_version) !== 1)
+    if (![1, 2].includes(Number(r.format_version)))
       throw new StoreError(409, 'Unsupported record format. Update the app.');
     return { userId: String(r.user_id), blind: Boolean(r.blind) };
   }
@@ -170,6 +264,7 @@ export class Store {
           'INSERT INTO attribution(id,entity,user_id,blind) VALUES (?,?,?,?)',
         )
         .run(saved.id, 'run', actor, Number(blind));
+      this.linkImages(saved.id, 'run', saved.query.imageIds);
       this.db.prepare('INSERT INTO run_metadata VALUES (?,?,?)').run(
         saved.id,
         JSON.stringify(
@@ -280,6 +375,7 @@ export class Store {
       this.db
         .prepare('INSERT INTO attribution(id,entity,user_id) VALUES (?,?,?)')
         .run(saved.id, 'experiment', this.actor(actor));
+      this.linkImages(saved.id, 'experiment', query.imageIds);
       this.db
         .prepare('INSERT INTO experiment_metadata VALUES (?,?,?)')
         .run(saved.id, provider, provider === 'jev' ? 1 : 2);

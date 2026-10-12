@@ -604,7 +604,7 @@ it('migrates schema 3 additively with a restorable backup and leaves old payload
     s.close();
     const old = new DatabaseSync(path);
     old.exec(
-      'DROP TABLE suite_run_links; DROP TABLE suite_executions; DROP TABLE expected_exposures; DROP TABLE exchange_documents; PRAGMA user_version=3;',
+      'DROP TABLE run_images; DROP TABLE experiment_images; DROP TABLE image_uploads; DROP TABLE image_blobs; DROP TABLE suite_run_links; DROP TABLE suite_executions; DROP TABLE expected_exposures; DROP TABLE exchange_documents; PRAGMA user_version=3;',
     );
     const body = old.prepare('SELECT body FROM runs').get()!.body;
     old.close();

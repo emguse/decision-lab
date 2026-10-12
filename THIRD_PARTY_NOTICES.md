@@ -35,6 +35,11 @@ Copies of the installed production dependency license texts are retained under [
 | `mdurl` | MIT | [mdurl](third-party-licenses/mdurl.txt) |
 | `punycode.js` | MIT | [punycode.js](third-party-licenses/punycode.js.txt) |
 | `uc.micro` | MIT | [uc.micro](third-party-licenses/uc.micro.txt) |
+| `sharp` | Apache-2.0 | [sharp](third-party-licenses/sharp.txt) |
+| `@img/sharp-*` native bindings | Apache-2.0 | [sharp native](third-party-licenses/sharp-native.txt) |
+| `@img/colour` and bundled color helpers | MIT | [colour](third-party-licenses/img-colour.txt) |
+| `detect-libc` | Apache-2.0 | [detect-libc](third-party-licenses/detect-libc.txt) |
+| `@img/sharp-libvips-*` and bundled libraries | LGPL-3.0-or-later and component licenses | [LGPL](third-party-licenses/libvips-lgpl.txt), [GPL](third-party-licenses/libvips-gpl.txt), [component notices](third-party-licenses/sharp-libvips.txt) |
 | dotenv | BSD-2-Clause | [dotenv](third-party-licenses/dotenv.txt) |
 
 Development tools and Python dependencies retain the license files in their own distributions. `package-lock.json` records npm package versions and license identifiers; the separately managed Python environment has its own dependency lockfile.
@@ -42,3 +47,7 @@ Development tools and Python dependencies retain the license files in their own 
 ## Repository skill
 
 The installed TypeSafe AI skill is MIT-licensed, copyright 2026 TypeSafe AI. Its original license is preserved at [.agents/skills/typesafe-ai/LICENSE](.agents/skills/typesafe-ai/LICENSE).
+
+The installed sharp native binaries are supplied through platform-specific optional npm packages. The lockfile records their exact versions; installed binary components can be inspected in `node_modules/@img/sharp-libvips-*/versions.json`. The retained libvips notices come from the upstream sharp-libvips distribution (its build scripts carry the [Apache-2.0 license](third-party-licenses/sharp-libvips-license.txt)); license texts for platform-specific optional dependencies also remain in their installed distributions. No native binaries or model weights are committed here.
+
+`StrandsAgents/strands-decider-2B-qwen3.5-v1-2610` is a separately downloaded Apache-2.0 adapter/head; see its [LICENSE.md](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610/blob/main/LICENSE.md).

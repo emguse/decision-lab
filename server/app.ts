@@ -8,6 +8,7 @@ import {
 import { exchangeFormatSchema, serializeDocument } from '../shared/exchange.js';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { validateImage } from './images.js';
 import { z } from 'zod';
 import { requestSchema } from '../shared/schema.js';
 import {
@@ -42,12 +43,15 @@ export function createApp(
       return c.json({ error: 'Origin is not allowed.' }, 403);
     await next();
   });
-  app.use(
-    '/api/*',
+  app.use('/api/*', async (c, next) =>
     bodyLimit({
-      maxSize: 1024 * 1024,
-      onError: (c) => c.json({ error: 'Input must be 1 MiB or smaller.' }, 413),
-    }),
+      maxSize:
+        c.req.method === 'POST' && c.req.path === '/api/images'
+          ? 6 * 1024 * 1024
+          : 1024 * 1024,
+      onError: (c) =>
+        c.json({ error: 'Input exceeds the request size limit.' }, 413),
+    })(c, next),
   );
   app.onError((error, c) => {
     if (error instanceof StoreError)
@@ -82,7 +86,7 @@ export function createApp(
         ),
       },
       schemaVersion: SCHEMA_VERSION,
-      recordFormatVersion: 1,
+      recordFormatVersion: 2,
     }),
   );
   app.get('/api/providers/:id/health', async (c) => {
@@ -94,6 +98,29 @@ export function createApp(
   });
   const actor = (c: { req: { header(name: string): string | undefined } }) =>
     store.actor(c.req.header('X-Local-User'));
+  app.post('/api/images', async (c) => {
+    const userId = actor(c);
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      throw new StoreError(400, 'Upload one image as multipart form data.');
+    }
+    const file = form.get('file');
+    if (!(file instanceof File) || form.getAll('file').length !== 1)
+      throw new StoreError(400, 'Upload one image using the file field.');
+    const data = Buffer.from(await file.arrayBuffer());
+    const info = await validateImage(data);
+    return c.json(store.saveImage(data, info, userId), 201);
+  });
+  app.get('/api/images/:id', (c) => {
+    actor(c);
+    const image = store.getImage(c.req.param('id'));
+    c.header('Content-Type', image.mime);
+    c.header('Cache-Control', 'no-store');
+    c.header('X-Content-Type-Options', 'nosniff');
+    return c.body(new Uint8Array(image.data));
+  });
   app.get('/api/local-users', (c) =>
     c.json({ users: store.listUsers(), defaultUserId: store.actor() }),
   );
@@ -237,7 +264,21 @@ export function createApp(
       (p) => p.connection.id === providerId,
     )?.connection;
     const start = performance.now();
-    const output = await selected.evaluate(query);
+    const { imageIds, ...textInput } = query;
+    if (
+      imageIds?.length &&
+      !['strands', 'llamacpp'].includes(connection?.adapter ?? '')
+    )
+      throw new ProviderError(
+        422,
+        'images_unsupported',
+        'This connection does not support images. Select an image-capable Strands or direct llama.cpp connection.',
+      );
+    const images = store.resolveImages(imageIds);
+    const output = await selected.evaluate({
+      ...textInput,
+      ...(images.length ? { images } : {}),
+    });
     const { rawResponse, executionInfo, ...response } = output;
     const run = store.saveRun(
       {

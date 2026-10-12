@@ -1,12 +1,25 @@
+import { ImageGallery } from './Images';
 import type { Run } from '../shared/schema';
 const pretty = (v: unknown) => JSON.stringify(v, null, 2);
 export function ResultView({ result }: { result: Run }) {
   return (
     <>
+      <ImageGallery ids={result.query.imageIds} />
       <div className="metrics">
         <div>
-          <small>MODEL</small>
-          <strong>{result.response.model}</strong>
+          <small>
+            {result.execution?.modelIdentity || result.execution?.modelArtifact
+              ? 'RECORDED MODEL'
+              : 'RESPONSE MODEL ID / ALIAS'}
+          </small>
+          <strong>
+            {result.execution?.modelIdentity?.name ??
+              result.execution?.modelArtifact ??
+              result.response.model}
+          </strong>
+          {result.execution?.modelArtifact && (
+            <small>Response model ID / alias: {result.response.model}</small>
+          )}
         </div>
         <div>
           <small>LATENCY</small>
@@ -75,6 +88,14 @@ export function ResultView({ result }: { result: Run }) {
         revision:
         {result.execution?.artifactRevision ?? 'Unknown'}
       </p>
+      {result.execution?.modelIdentity && (
+        <p className="hint">
+          Recorded model artifact: {result.execution.modelIdentity.artifact} ·
+          Repository revision (runtime-reported):{' '}
+          {result.execution.modelIdentity.repositoryRevision ?? 'Unknown'} ·
+          Identity source: {result.execution.modelIdentity.source}
+        </p>
+      )}
       <details className="raw">
         <summary>Saved request</summary>
         <pre>{pretty(result.query)}</pre>

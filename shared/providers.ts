@@ -5,12 +5,26 @@ export const providerIdSchema = z
   .max(64)
   .regex(/^[a-z][a-z0-9-]*$/);
 export type ProviderId = z.infer<typeof providerIdSchema>;
+export const modelIdentitySchema = z.object({
+  name: z.string().min(1),
+  artifact: z.string().min(1),
+  repositoryRevision: z
+    .string()
+    .regex(/^[a-f0-9]{40,64}$/)
+    .optional(),
+  source: z.literal('llamacpp_props'),
+});
+export type ModelIdentity = z.infer<typeof modelIdentitySchema>;
 export interface ProviderHealth {
   status: 'unconfigured' | 'unreachable' | 'ready' | 'mismatch' | 'configured';
   model?: string;
   baseModel?: string;
   device?: string;
   maxLength?: number;
+  vision?: boolean;
+  imageBlockReason?: 'router' | 'missing_image_capability';
+  modelArtifact?: string;
+  modelIdentity?: ModelIdentity;
 }
 const metadata = {
   requestedModel: z.string(),
@@ -18,6 +32,8 @@ const metadata = {
   device: z.string().optional(),
   baseModel: z.string().optional(),
   artifactRevision: z.string().nullable().default(null),
+  modelArtifact: z.string().optional(),
+  modelIdentity: modelIdentitySchema.optional(),
 };
 export const executionMetadataSchema = z.discriminatedUnion('formatVersion', [
   z.object({

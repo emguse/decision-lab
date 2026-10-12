@@ -1,8 +1,12 @@
 import type { Connection } from './connections.js';
-import type { ProviderConfig, ProviderHealth } from '../shared/providers.js';
+import type {
+  ProviderConfig,
+  ProviderHealth,
+  ModelIdentity,
+} from '../shared/providers.js';
 import {
   validateResponse,
-  type Query,
+  type DecisionInput,
   type DecisionResponse,
 } from '../shared/schema.js';
 export class ProviderError extends Error {
@@ -15,10 +19,15 @@ export class ProviderError extends Error {
   }
 }
 export interface DecisionProvider {
-  evaluate(query: Query): Promise<
+  evaluate(query: DecisionInput): Promise<
     DecisionResponse & {
       rawResponse?: unknown;
-      executionInfo?: { device?: string; baseModel?: string };
+      executionInfo?: {
+        device?: string;
+        baseModel?: string;
+        modelArtifact?: string;
+        modelIdentity?: ModelIdentity;
+      };
     }
   >;
 }
@@ -33,7 +42,13 @@ export class JevProvider implements DecisionProvider {
     private fetcher: typeof fetch = fetch,
     private timeoutMs = 60000,
   ) {}
-  async evaluate(query: Query) {
+  async evaluate(query: DecisionInput) {
+    if (query.images?.length)
+      throw new ProviderError(
+        422,
+        'images_unsupported',
+        'This connection does not support images.',
+      );
     if (!this.key)
       throw new ProviderError(
         503,

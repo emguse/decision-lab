@@ -15,6 +15,7 @@ import {
   type Run,
 } from '../shared/schema';
 import './style.css';
+import { ImageAttachments } from './Images';
 import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
 import { SuitesWorkspace } from './Suites';
@@ -67,6 +68,7 @@ function App({
   } | null>(null);
   const [suiteId, setSuiteId] = useState<string | null>(null);
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
+  const [imagesBlocked, setImagesBlocked] = useState(false);
   const [blind, setBlind] = useState(true);
   const [provider, setProvider] = useState<ProviderId>(
     () =>
@@ -85,6 +87,10 @@ function App({
       : undefined;
   const modelEditable = selectedConfig?.modelEditable ?? provider === 'jev';
   const canCheck = selectedConfig?.healthCheck ?? false;
+  const canRunImages =
+    ['strands', 'llamacpp'].includes(selectedConfig?.adapter ?? '') &&
+    health?.status === 'ready' &&
+    health.vision === true;
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -125,6 +131,90 @@ function App({
     }
   };
   const jsonValid = mode === 'form' || Boolean(parseJson());
+  const isLlamaCpp = selectedConfig?.adapter === 'llamacpp';
+  const matchingRuntime =
+    health?.status === 'ready' && health.model === query.model;
+  const currentModelIdentity = matchingRuntime
+    ? health.modelIdentity
+    : undefined;
+  const currentModelArtifact = matchingRuntime
+    ? health.modelArtifact
+    : undefined;
+  const displayedModel = isLlamaCpp
+    ? (currentModelIdentity?.name ??
+      currentModelArtifact ??
+      (!health
+        ? 'Checking model identity…'
+        : health.status !== 'ready'
+          ? 'Unknown — check connection'
+          : !matchingRuntime
+            ? 'Unknown — request model differs from runtime'
+            : 'Unknown — runtime did not provide identity'))
+    : query.model;
+  const runDisabledReasons: string[] = [];
+  if (busy)
+    runDisabledReasons.push('A request is running. Wait for it to finish.');
+  if (!config) runDisabledReasons.push('Connection settings are loading.');
+  else if (!selectedConfig)
+    runDisabledReasons.push(
+      'This connection is no longer registered. Select another connection.',
+    );
+  else if (!selectedConfig.configured)
+    runDisabledReasons.push(
+      'This connection is not configured. Set its server-side credentials and restart the application server.',
+    );
+  if (fieldError)
+    runDisabledReasons.push(
+      `Fix the invalid fields: ${Object.entries(invalidFields)
+        .filter(([, invalid]) => invalid)
+        .map(([label]) => label)
+        .join(', ')}.`,
+    );
+  if (!jsonValid)
+    runDisabledReasons.push(
+      'Request JSON is invalid. Fix its syntax and required fields.',
+    );
+  else if (!valid.success)
+    runDisabledReasons.push(
+      'The request is invalid. Check the model, questions, criteria and image references.',
+    );
+  if (!title.trim()) runDisabledReasons.push('Enter an experiment name.');
+  if (imagesBlocked)
+    runDisabledReasons.push(
+      'Image upload is pending or failed. Wait for the upload, or review and dismiss its error.',
+    );
+  if (query.imageIds?.length && !canRunImages && selectedConfig?.configured) {
+    if (!['strands', 'llamacpp'].includes(selectedConfig.adapter ?? ''))
+      runDisabledReasons.push(
+        'This connection does not accept image attachments. Select an image-capable Strands or direct llama.cpp connection, or remove the images to run text only.',
+      );
+    else if (checking || !health)
+      runDisabledReasons.push(
+        'Image support has not been verified yet. Wait for the connection check, then use Check connection if needed.',
+      );
+    else if (health.status === 'mismatch')
+      runDisabledReasons.push(
+        'The served model does not match the configured model or lacks decision support. Match the runtime model and connection settings, restart the application server, then use Check connection.',
+      );
+    else if (health.status !== 'ready')
+      runDisabledReasons.push(
+        'The inference server is not ready. Start it at the configured address, then use Check connection.',
+      );
+    else if (health.imageBlockReason === 'router')
+      runDisabledReasons.push(
+        'This connection uses llama.cpp router mode. This app currently disables image runs through the router. Start a fixed-model llama.cpp server with its matching projector (--mmproj), set the connection endpoint to that direct server in systemone.toml, restart the application server, then use Check connection. Images are retained; removing them allows text-only runs.',
+      );
+    else if (selectedConfig.adapter === 'strands')
+      runDisabledReasons.push(
+        health.vision === false
+          ? 'The Strands server reports vision: false. Start an image-capable model/runtime with --vision, then use Check connection. Images are retained.'
+          : 'The Strands server did not report vision capability. Use a runtime with image support, start it with --vision, then use Check connection. Images are retained.',
+      );
+    else
+      runDisabledReasons.push(
+        'The llama.cpp server did not advertise image input for the selected model. Check that the model supports images and its matching projector is loaded with --mmproj, then use Check connection. Images are retained.',
+      );
+  }
   async function refresh() {
     const [r, e, c] = await Promise.all([
       request<RunSummary[]>('runs/summaries'),
@@ -233,10 +323,14 @@ function App({
     setMode('form');
   }
   async function submit(kind: 'runs' | 'experiments') {
-    if (lock.current || fieldError) return;
+    if (lock.current || fieldError || imagesBlocked) return;
     const q = mode === 'json' ? parseJson() : valid.success ? valid.data : null;
     if (!q) {
       setError('Check the request format.');
+      return;
+    }
+    if (kind === 'runs' && q.imageIds?.length && !canRunImages) {
+      setError('Images require a ready image-capable connection.');
       return;
     }
     lock.current = true;
@@ -513,7 +607,12 @@ function App({
                   </label>
                   {canCheck && (
                     <>
-                      <p>Configured model: {selectedConfig?.model}</p>
+                      <p>
+                        {selectedConfig?.adapter === 'llamacpp'
+                          ? 'Configured request ID'
+                          : 'Configured model'}
+                        : {selectedConfig?.model}
+                      </p>
                       <button
                         disabled={checking || busy}
                         onClick={() => void checkLocal()}
@@ -529,6 +628,12 @@ function App({
                               ? 'Check the server-side connection settings.'
                               : 'Start the inference server and check the connection.'}
                       </p>
+                      {health?.modelArtifact && (
+                        <p>
+                          Model file (reported by server):{' '}
+                          {health.modelArtifact}
+                        </p>
+                      )}
                       {selectedConfig?.guidance && (
                         <p className="hint">{selectedConfig.guidance}</p>
                       )}
@@ -576,6 +681,7 @@ function App({
                   <button
                     disabled={
                       fieldError ||
+                      imagesBlocked ||
                       busy ||
                       !jsonValid ||
                       !valid.success ||
@@ -587,19 +693,31 @@ function App({
                   </button>
                   <button
                     className="primary"
-                    disabled={
-                      fieldError ||
-                      busy ||
-                      !selectedConfig?.configured ||
-                      !jsonValid ||
-                      !valid.success ||
-                      !title.trim()
+                    disabled={runDisabledReasons.length > 0}
+                    aria-describedby={
+                      runDisabledReasons.length
+                        ? 'run-disabled-reasons'
+                        : undefined
                     }
                     onClick={() => submit('runs')}
                   >
                     {busy ? 'Running…' : 'Run decision ↗'}
                   </button>
                 </div>
+                {runDisabledReasons.length > 0 && (
+                  <div
+                    id="run-disabled-reasons"
+                    className="setup"
+                    aria-live="polite"
+                  >
+                    <strong>Run unavailable</strong>
+                    <ul>
+                      {runDisabledReasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {error && (
                   <div role="alert" className="alert">
                     {error}
@@ -651,16 +769,53 @@ function App({
                       </div>
                     </div>
                     <label>
-                      Model
+                      {isLlamaCpp ? 'Model (runtime-reported)' : 'Model'}
                       <input
                         aria-label="Model"
+                        aria-describedby={
+                          isLlamaCpp ? 'request-model-identity' : undefined
+                        }
                         readOnly={!modelEditable}
-                        value={query.model}
+                        value={displayedModel}
                         onChange={(e) =>
+                          modelEditable &&
                           update({ ...query, model: e.target.value })
                         }
                       />
                     </label>
+                    {isLlamaCpp && (
+                      <div id="request-model-identity" className="hint">
+                        <p>Request model ID / alias: {query.model}</p>
+                        {currentModelArtifact && (
+                          <p>Model artifact: {currentModelArtifact}</p>
+                        )}
+                        {currentModelIdentity?.repositoryRevision && (
+                          <p>
+                            Repository revision (runtime-reported):{' '}
+                            {currentModelIdentity.repositoryRevision}
+                          </p>
+                        )}
+                        <p>
+                          {currentModelIdentity || currentModelArtifact
+                            ? 'Model identity is recorded with each run. The request uses the ID / alias above; identity is checked again at execution.'
+                            : 'The actual model identity is unconfirmed. The request ID / alias does not identify the model weights.'}
+                        </p>
+                      </div>
+                    )}
+                    <ImageAttachments
+                      ids={query.imageIds}
+                      userId={user.id}
+                      disabled={busy || fieldError || !jsonValid}
+                      onBlocked={setImagesBlocked}
+                      onChange={(imageIds) => update({ ...query, imageIds })}
+                    />
+                    {Boolean(query.imageIds?.length) && !canRunImages && (
+                      <p role="status" className="hint">
+                        Images are retained. Select a ready image-capable
+                        connection: Strands with --vision or direct llama.cpp
+                        with a compatible model and --mmproj.
+                      </p>
+                    )}
                     {mode === 'json' ? (
                       <>
                         <label>
@@ -668,6 +823,7 @@ function App({
                           <textarea
                             className="code"
                             aria-label="Request JSON"
+                            disabled={imagesBlocked}
                             rows={24}
                             value={json}
                             onChange={(e) => {

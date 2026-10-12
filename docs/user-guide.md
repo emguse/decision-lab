@@ -27,6 +27,8 @@ Confidence describes distribution concentration, not correctness. Score is the p
 
 ## Create an experiment suite with an LLM
 
+Experiment suites currently accept text/JSON cases only. Image cases and image import/export are not yet supported. Use Playground to run image inputs, save Experiments and Runs, and perform human evaluation.
+
 1. Give a user-supplied LLM the [Exchange specification](experiment-exchange.md) and input examples. Ask it to produce a Decision Definition and Experiment Suite as separate files. The definition contains questions; the suite contains input cases and optional expectations. Decision Lab does not include an LLM authoring service.
 2. In the suite list, select input files or paste their contents. **Validate and preview** checks them; **Save input** imports them. Neither action calls a model.
 3. In suite details, choose a connection and model, then select **Run suite sequentially**. Execution stops on the first failure. **Resume unfinished cases** skips successful cases and retries unfinished cases. Create a new execution for a separate comparison.
@@ -57,3 +59,17 @@ Questions without labels in the selected grading source remain ungraded. There i
 - Cases running when the server restarts are marked interrupted; they are not automatically resent.
 - Different content under the same name and content version causes a conflict. Assign a new version to modified input.
 - For data recovery, follow the backup procedure in [Operations and development](operations.md).
+
+## Image inputs
+
+In Playground, select, drop, or paste images into the **Images** area. Up to four static PNG, JPEG, or WebP files are accepted, each at most 5 MiB and 4096 px per side. GIF, animated images, SVG, and image URLs are unsupported. Move images left/right to set their order, or remove an attachment. Upload status and errors are shown; execution and Experiment saving wait for uploads to finish. Dismiss a failed upload after reviewing it; already uploaded images remain attached.
+
+Select a ready Strands or direct llama.cpp connection whose health reports `vision: true` and the configured model. Other connections retain attachments but cannot execute them. Refresh connection health after restarting the runtime. Strands requires `--vision` and scales the longer side to 448 px for inference. Clef requires a compatible image model and loaded `--mmproj`; its full prompt, including images and all questions, must fit in `--ubatch-size`. Router image inference is unsupported. Original images are retained. Text/JSON state can accompany images, or be an empty string.
+
+For a llama.cpp connection, **Build a request → Model** displays the runtime-reported model identity. The accompanying artifact and repository revision describe the identity recorded with each new run. **Request model ID / alias** is shown separately and remains the `model` value sent in Request JSON. Missing identity is explicitly shown as unknown; a mismatched request ID does not inherit the connected model's identity. Identity is rechecked at execution, and the saved run snapshot is authoritative.
+
+When **Run decision** is disabled, **Run unavailable** below the button lists the current blocking reasons and how to resolve them. Image diagnostics distinguish router mode (an application restriction), missing or false Strands vision capability, unverified connection health, unsupported image input, and model mismatch. Upload errors, invalid JSON/form fields, missing experiment name, and missing connection configuration are also explained. Connection verification alone does not imply that image runs are allowed.
+
+The JSON editor uses `imageIds: ["<uploaded UUID>"]`, not Base64 or URLs. IDs are local database references, not portable exchange data. Experiment saving, history, copying a saved run to Playground, and human evaluation retain images in their original order. Viewing an input image does not reveal model predictions. Profile switching discards pending UI updates from the prior profile. The application shares local input data; profiles provide attribution rather than authentication.
+
+Image-enabled Suite cases and portable image import/export are deferred. Existing text-only Suite and exchange workflows are unchanged.

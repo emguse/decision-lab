@@ -1,6 +1,6 @@
 {
   "name": "jev-query",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,7 +16,8 @@
     "test:live": "tsx scripts/live.ts",
     "format": "prettier --write src server shared scripts tests *.ts *.json",
     "format:check": "prettier --check src server shared scripts tests *.ts *.json",
-    "test:local": "tsx scripts/local.ts"
+    "test:local": "tsx scripts/local.ts",
+    "test:images:local": "tsx scripts/images-local.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
@@ -25,6 +26,7 @@
     "markdown-it": "^15.0.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "sharp": "^0.35.5",
     "smol-toml": "^1.9.0",
     "yaml": "^2.9.1",
     "zod": "^4.1.0"

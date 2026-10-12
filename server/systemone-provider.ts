@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { validateResponse, type Query } from '../shared/schema.js';
-import type { ProviderHealth } from '../shared/providers.js';
+import { basename } from 'node:path';
+import { validateResponse, type DecisionInput } from '../shared/schema.js';
+import type { ProviderHealth, ModelIdentity } from '../shared/providers.js';
 import { ProviderError, type ConfiguredDecisionProvider } from './provider.js';
 import type { Connection } from './connections.js';
 export class SystemOneProvider implements ConfiguredDecisionProvider {
@@ -26,7 +27,7 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
       ...(this.connection.adapter === 'llamacpp'
         ? {
             guidance:
-              'Load the model in llama.cpp. The entire prompt must fit in the runtime batch.',
+              'Load the model in llama.cpp. Images require a compatible model and loaded multimodal projector on a direct server. The entire prompt, including images and all questions, must fit in --ubatch-size.',
           }
         : {}),
     };
@@ -84,21 +85,101 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
             z.object({
               id: z.string(),
               architecture: z
-                .object({ output_modalities: z.array(z.string()) })
+                .object({
+                  input_modalities: z.array(z.string()).optional(),
+                  output_modalities: z.array(z.string()),
+                })
                 .optional(),
+              status: z.unknown().optional(),
             }),
           ),
         })
         .parse(await models.json());
       const selected = list.data.find((m) => m.id === this.connection.model);
+      const router = list.data.length !== 1 || selected?.status !== undefined;
+      const vision =
+        !router &&
+        selected?.architecture?.input_modalities?.includes('image') === true;
+      let modelArtifact: string | undefined;
+      let modelIdentity: ModelIdentity | undefined;
+      if (
+        !router &&
+        selected?.architecture?.output_modalities.includes('decisions')
+      ) {
+        // Optional display provenance; unavailable props must not block inference.
+        try {
+          const props = await this.request(origin + '/props', {}, 3000);
+          if (props.ok) {
+            const parsed = z
+              .object({
+                model_path: z.string().min(1).max(4096),
+                model_alias: z.string().optional(),
+              })
+              .safeParse(await props.json());
+            if (
+              parsed.success &&
+              (parsed.data.model_alias === undefined ||
+                parsed.data.model_alias === selected.id)
+            ) {
+              const modelPath = parsed.data.model_path.replaceAll('\\', '/');
+              const filename = basename(modelPath);
+              if (filename && filename !== '.' && filename !== '..') {
+                modelArtifact = filename;
+                // Cache provenance is runtime-reported, not a verified weight hash.
+                const cache = modelPath.match(
+                  /(?:^|\/)models--([^/]+)\/snapshots\/([a-f0-9]{40,64})\/[^/]+$/,
+                );
+                const parts = cache?.[1].split('--');
+                const repository =
+                  parts &&
+                  parts.length === 2 &&
+                  parts.every((part) => /^[A-Za-z0-9_.-]+$/.test(part))
+                    ? parts.join('/')
+                    : undefined;
+                modelIdentity = {
+                  name: repository ?? filename,
+                  artifact: filename,
+                  ...(repository ? { repositoryRevision: cache![2] } : {}),
+                  source: 'llamacpp_props',
+                };
+              }
+            }
+          }
+        } catch {
+          /* Metadata is optional; never expose local paths or diagnostics. */
+        }
+      }
       return selected?.architecture?.output_modalities.includes('decisions')
-        ? { status: 'ready', model: selected.id }
+        ? {
+            status: 'ready',
+            model: selected.id,
+            ...(modelArtifact ? { modelArtifact } : {}),
+            ...(modelIdentity ? { modelIdentity } : {}),
+            // Router metadata can advertise images without a loaded projector.
+            // Image inference is supported only on a fixed-model direct server.
+            vision,
+            ...(!vision
+              ? {
+                  imageBlockReason: router
+                    ? ('router' as const)
+                    : ('missing_image_capability' as const),
+                }
+              : {}),
+          }
         : { status: 'mismatch' };
     } catch {
       return { status: 'unreachable' };
     }
   }
-  async evaluate(query: Query) {
+  async evaluate(query: DecisionInput) {
+    let modelArtifact: string | undefined;
+    let modelIdentity: ModelIdentity | undefined;
+    if (query.images?.length && this.connection.adapter !== 'llamacpp')
+      throw new ProviderError(
+        422,
+        'images_unsupported',
+        'This connection does not support images.',
+      );
     if (this.connection.adapter === 'llamacpp') {
       if (query.model !== this.connection.model)
         throw new ProviderError(
@@ -107,16 +188,37 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
           'Use the configured model ID.',
         );
       const health = await this.health();
+      modelArtifact = health.modelArtifact;
+      modelIdentity = health.modelIdentity;
       if (health.status !== 'ready')
         throw new ProviderError(
           503,
           'model_unavailable',
           'Check the model and decision API compatibility.',
         );
+      if (query.images?.length && health.vision !== true)
+        throw new ProviderError(
+          422,
+          'images_unsupported',
+          health.imageBlockReason === 'router'
+            ? 'This app does not support image runs through llama.cpp router mode. Configure a fixed-model direct endpoint.'
+            : 'The selected llama.cpp model did not advertise image input. Check the image-capable model and its matching --mmproj.',
+        );
     }
+    const { images, ...textInput } = query;
     const response = await this.request(this.connection.endpoint, {
       method: 'POST',
-      body: JSON.stringify(query),
+      body: JSON.stringify({
+        ...textInput,
+        ...(images?.length
+          ? {
+              images: images.map(
+                (image) =>
+                  `data:${image.mime};base64,${Buffer.from(image.data).toString('base64')}`,
+              ),
+            }
+          : {}),
+      }),
     });
     if (!response.ok)
       throw new ProviderError(
@@ -140,7 +242,13 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
         normalized.model !== query.model
       )
         throw new Error('Model changed');
-      return { ...normalized, rawResponse: raw };
+      return {
+        ...normalized,
+        rawResponse: raw,
+        ...(modelArtifact
+          ? { executionInfo: { modelArtifact, modelIdentity } }
+          : {}),
+      };
     } catch {
       throw new ProviderError(
         502,
