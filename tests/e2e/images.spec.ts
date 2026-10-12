@@ -13,6 +13,75 @@ async function image(width = 2) {
       .toBuffer(),
   };
 }
+for (const method of ['select', 'drop', 'paste'] as const) {
+  for (const mimeType of ['', 'application/octet-stream']) {
+    test(`accepts valid image bytes via ${method} with MIME ${mimeType || 'empty'}`, async ({
+      page,
+    }) => {
+      const api = await mockApi(page);
+      await page.goto('/');
+      const bytes = Array.from((await image()).buffer);
+      const reportedType = await page
+        .getByRole('region', { name: 'Image attachments' })
+        .evaluate(
+          (el, { bytes, mimeType, method }) => {
+            const file = new File([new Uint8Array(bytes)], 'image.bin', {
+              type: mimeType,
+            });
+            const transfer = new DataTransfer();
+            transfer.items.add(file);
+            if (method === 'select') {
+              const input = el.querySelector('input')!;
+              input.files = transfer.files;
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (method === 'drop') {
+              el.dispatchEvent(
+                new DragEvent('drop', {
+                  bubbles: true,
+                  dataTransfer: transfer,
+                }),
+              );
+            } else {
+              el.dispatchEvent(
+                new ClipboardEvent('paste', {
+                  bubbles: true,
+                  clipboardData: transfer,
+                }),
+              );
+            }
+            return file.type;
+          },
+          { bytes, mimeType, method },
+        );
+      expect(reportedType).toBe(mimeType);
+      await expect(page.getByAltText('Input image 1')).toBeVisible();
+      await page
+        .getByRole('button', { name: 'Save experiment', exact: true })
+        .click();
+      await expect(
+        page.getByText('Experiment saved.', { exact: true }),
+      ).toBeVisible();
+      const id = api.store.listExperiments()[0].query.imageIds![0];
+      expect(api.store.getImage(id).mime).toBe('image/png');
+    });
+  }
+}
+test('rejects oversized attachments before upload even with unknown MIME', async ({
+  page,
+}) => {
+  const api = await mockApi(page);
+  await page.goto('/');
+  await page.getByLabel('Add images').setInputFiles({
+    name: 'oversized.bin',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.alloc(5 * 1024 * 1024 + 1),
+  });
+  await expect(page.getByRole('alert')).toContainText('5 MiB or smaller');
+  expect(api.bodies.filter((body) => body.path === '/api/images')).toHaveLength(
+    0,
+  );
+  await expect(page.getByAltText('Input image 1')).toHaveCount(0);
+});
 for (const clef of [false, true]) {
   test(`selects, reorders, saves, restores and labels images without leaking predictions (Clef=${clef})`, async ({
     page,
@@ -236,14 +305,14 @@ test('image references round-trip through JSON and block invalid requests', asyn
     fullPage: true,
   });
 });
-test('upload failure blocks saving and executing until dismissed', async ({
+test('invalid bytes with unknown MIME block saving and executing until dismissed', async ({
   page,
 }) => {
   await mockApi(page, { local: true, vision: true, localModel: model });
   await page.goto('/');
   await page.getByLabel('Add images').setInputFiles({
-    name: 'corrupt.png',
-    mimeType: 'image/png',
+    name: 'corrupt.bin',
+    mimeType: 'application/octet-stream',
     buffer: Buffer.from('bad image'),
   });
   await expect(page.getByRole('alert')).toContainText('readable static');

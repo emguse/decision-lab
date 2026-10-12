@@ -118,13 +118,8 @@ export function ImageAttachments({
     let expectedIds = [...currentIds.current];
     try {
       for (const file of files) {
-        if (
-          !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ||
-          file.size > 5 * 1024 * 1024
-        )
-          throw new Error(
-            'Use static PNG, JPEG or WebP files, at most 5 MiB each.',
-          );
+        if (file.size > 5 * 1024 * 1024)
+          throw new Error('Images must be 5 MiB or smaller.');
         const body = new FormData();
         body.append('file', file);
         const response = await fetch('/api/images', {
