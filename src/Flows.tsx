@@ -1574,18 +1574,19 @@ export function FlowsWorkspace({
           Saved flow suite
           <select
             value={suiteId}
-            onChange={(e) =>
-              e.target.value &&
+            onChange={(e) => {
+              const selectedSuiteId = e.target.value;
+              if (!selectedSuiteId) return;
               void action(async () => {
                 const d = await request<FlowSuite>(
-                  `flow-documents/${e.target.value}`,
+                  `flow-documents/${selectedSuiteId}`,
                 );
                 setSuite(d);
-                setSuiteId(e.target.value);
+                setSuiteId(selectedSuiteId);
                 setSuiteExecutionIds([]);
                 setSuiteResult(null);
-              })
-            }
+              });
+            }}
           >
             <option value="">New suite</option>
             {documents

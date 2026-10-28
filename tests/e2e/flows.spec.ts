@@ -1,5 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { mockApi } from './mock';
+import { FlowService } from '../../server/flows';
+import {
+  exampleFlow,
+  exampleFlowDefinition,
+  exampleFlowSuite,
+} from '../../shared/flow-examples';
 
 test('builds connections, runs two judgments, reveals the trace and evaluates a suite', async ({
   page,
@@ -149,5 +155,102 @@ test('rejects a cycle and edits branch wiring without code', async ({
       .getByRole('group', { name: 'Branch 2', exact: true })
       .getByRole('combobox', { name: 'Question', exact: true }),
   ).toHaveValue('is_urgent');
+  mock.store.close();
+});
+
+test('keeps the displayed and executed saved Suite aligned after delayed selection', async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  const actor = mock.store.actor();
+  mock.store.saveDocuments([exampleFlowDefinition], actor);
+  const service = new FlowService(mock.store);
+  service.save(exampleFlow, actor);
+  const suites = [1, 2].map((version) => {
+    const document = {
+      ...exampleFlowSuite,
+      version,
+      cases: [
+        {
+          ...exampleFlowSuite.cases[0],
+          id: `saved_case_${version}`,
+          state: `Saved Suite input ${version}`,
+        },
+      ],
+    };
+    return { id: service.save(document, actor).id, document };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Flows', exact: true }).click();
+  const selection = page.getByRole('combobox', {
+    name: 'Saved flow suite',
+    exact: true,
+  });
+  await expect(selection.locator('option')).toHaveCount(3);
+  let previousId = '';
+  for (const saved of suites) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const documentUrl = `**/api/flow-documents/${saved.id}`;
+    await page.route(documentUrl, async (route) => {
+      await gate;
+      await route.fallback();
+    });
+    const requested = page.waitForRequest((request) =>
+      request.url().endsWith(`/api/flow-documents/${saved.id}`),
+    );
+    const responded = page.waitForResponse((response) =>
+      response.url().endsWith(`/api/flow-documents/${saved.id}`),
+    );
+    await selection.selectOption(saved.id);
+    await requested;
+    try {
+      await expect(selection).toHaveValue(previousId);
+    } finally {
+      release();
+    }
+    await responded;
+    await expect(
+      page.getByRole('textbox', { name: 'State (text)', exact: true }),
+    ).toHaveValue(saved.document.cases[0].state);
+    await expect(selection).toHaveValue(saved.id);
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toHaveValue(saved.document.cases[0].id);
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toBeDisabled();
+    const run = page.getByRole('button', {
+      name: 'Run flow suite sequentially',
+      exact: true,
+    });
+    await expect(run).toBeEnabled();
+    const executionRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        /\/api\/flow-suites\/[^/]+\/execute$/.test(
+          new URL(request.url()).pathname,
+        ),
+    );
+    await run.click();
+    expect(new URL((await executionRequest).url()).pathname).toBe(
+      `/api/flow-suites/${saved.id}/execute`,
+    );
+    await expect(page.locator('.flow-execution-select')).toHaveCount(1);
+    await expect(page.locator('.flow-execution-select')).toContainText(
+      `${saved.document.cases[0].id} · completed`,
+    );
+    const executions = mock.store
+      .listFlowExecutions()
+      .filter((execution) => execution.suiteId === saved.id);
+    expect(executions).toHaveLength(1);
+    expect(executions[0].caseId).toBe(saved.document.cases[0].id);
+    expect(executions[0].input.state).toBe(saved.document.cases[0].state);
+    previousId = saved.id;
+    await page.unroute(documentUrl);
+  }
+  expect(mock.calls()).toBe(4);
   mock.store.close();
 });
