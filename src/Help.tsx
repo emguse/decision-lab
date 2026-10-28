@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import guide from '../docs/user-guide.md?raw';
+import flows from '../docs/decision-flows.md?raw';
 import exchange from '../docs/experiment-exchange.md?raw';
 import connections from '../docs/connections.md?raw';
 import operations from '../docs/operations.md?raw';
@@ -21,6 +22,13 @@ export const helpDocuments = [
     file: 'experiment-exchange.md',
     path: 'docs/experiment-exchange.md',
     text: exchange,
+  },
+  {
+    id: 'flows',
+    title: 'Decision flows',
+    file: 'decision-flows.md',
+    path: 'docs/decision-flows.md',
+    text: flows,
   },
   {
     id: 'connections',

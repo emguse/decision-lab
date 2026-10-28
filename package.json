@@ -17,7 +17,9 @@
     "format": "prettier --write src server shared scripts tests *.ts *.json",
     "format:check": "prettier --check src server shared scripts tests *.ts *.json",
     "test:local": "tsx scripts/local.ts",
-    "test:images:local": "tsx scripts/images-local.ts"
+    "test:images:local": "tsx scripts/images-local.ts",
+    "prepare:benchmark": "tsx scripts/benchmark.ts",
+    "compare:flows": "tsx scripts/compare-flows.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",

@@ -6,7 +6,7 @@ For workflow instructions, see the [User guide](user-guide.md). For provider pre
 
 Each file contains exactly one JSON-compatible document. YAML 1.2 and JSON use the
 same Zod schemas in `shared/exchange.ts`. `kind` distinguishes the three documents;
-`schemaVersion: 1` is the exchange contract version. Definition/Suite `version`
+`schemaVersion` is the exchange contract version: Definitions retain 1; Suites accept 1 for text/JSON and 2 for local image references. Definition/Suite `version`
 is a positive integer assigned by the author. Application release, SQLite schema,
 persisted execution `formatVersion`, and exchange/content versions are independent.
 
@@ -39,13 +39,13 @@ inspect the exported per-question errors and probabilities, then propose a new
 version of the definition and/or Suite. Missing labels and failed cases are not
 correct answers and are not included in accuracy denominators.
 
-Experiment suites accept text/JSON cases only. Image cases and portable image import/export are not yet supported; use Playground for image runs and human evaluation.
+Schema-1 Suites retain text/JSON cases. Schema-2 Suites also accept ordered `imageIds` for local originals; save image changes as a new Suite version. These references retain BLOBs before execution and use existing adapter capability checks. Portable image bundles are not yet supported. Flow documents and evaluations have separate contracts; see [Decision flows](decision-flows.md).
 
 Import/export preserves values, types, and order after schema validation/defaults.
 It does not preserve comments, quoting, indentation, or original bytes. Object
 property order follows JavaScript's rules (integer-like keys enumerate numerically);
 use descriptive IDs if candidate order matters. These files accept no executable
-code, images, templates, custom YAML tags, anchors, aliases, merge semantics,
+code, embedded image bytes, templates, custom YAML tags, anchors, aliases, merge semantics,
 non-finite numbers, or duplicate mapping keys. Mapping keys must be strings; quote
 boolean-like/numeric keys in YAML. Prototype-related keys (`__proto__`,
 `constructor`, `prototype`) are unsupported. Identifiers must have no surrounding

@@ -1,3 +1,11 @@
+import {
+  flowDocumentSchema,
+  flowExecutionSchema,
+  flowRevisionSchema,
+  type FlowDocument,
+  type FlowExecution,
+  type FlowRevision,
+} from '../shared/flows.js';
 import { z } from 'zod';
 import {
   inputDocumentSchema,
@@ -35,7 +43,7 @@ export class StoreError extends Error {
     super(message);
   }
 }
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 const legacy = 'legacy-unknown';
 const migrations = [
   `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -56,6 +64,16 @@ const migrations = [
  CREATE TABLE image_uploads(image_id TEXT NOT NULL REFERENCES image_blobs(id) ON DELETE CASCADE,user_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,PRIMARY KEY(image_id,user_id));
  CREATE TABLE run_images(run_id TEXT NOT NULL REFERENCES runs(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(run_id,position));
  CREATE TABLE experiment_images(experiment_id TEXT NOT NULL REFERENCES experiments(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(experiment_id,position));`,
+  `CREATE TABLE suite_images(document_id TEXT NOT NULL REFERENCES exchange_documents(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(document_id,position));
+ CREATE TABLE flow_documents(id TEXT PRIMARY KEY,kind TEXT NOT NULL,name TEXT NOT NULL,version INTEGER NOT NULL,body TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,UNIQUE(kind,name,version));
+ CREATE TABLE flow_expected_exposures(suite_id TEXT NOT NULL REFERENCES flow_documents(id),user_id TEXT NOT NULL REFERENCES users(id),seen_at TEXT NOT NULL,PRIMARY KEY(suite_id,user_id));
+ CREATE TABLE flow_document_images(document_id TEXT NOT NULL REFERENCES flow_documents(id),case_id TEXT NOT NULL,position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(document_id,case_id,position));
+ CREATE TABLE flow_executions(id TEXT PRIMARY KEY,flow_id TEXT NOT NULL REFERENCES flow_documents(id),body TEXT NOT NULL);
+ CREATE TABLE flow_images(execution_id TEXT NOT NULL REFERENCES flow_executions(id),position INTEGER NOT NULL,image_id TEXT NOT NULL REFERENCES image_blobs(id),PRIMARY KEY(execution_id,position));
+ CREATE TABLE flow_raw_responses(execution_id TEXT NOT NULL REFERENCES flow_executions(id),node_id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(execution_id,node_id));
+ CREATE TABLE flow_exposures(execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),seen_at TEXT NOT NULL,PRIMARY KEY(execution_id,user_id));
+ CREATE TABLE flow_assignments(execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(execution_id,user_id));
+ CREATE TABLE flow_revisions(id TEXT PRIMARY KEY,execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,body TEXT NOT NULL);`,
 ];
 export class Store {
   private db: DatabaseSync;
@@ -195,7 +213,7 @@ export class Store {
   cleanupImages(now = Date.now()) {
     this.db
       .prepare(
-        `DELETE FROM image_blobs WHERE last_used < ? AND NOT EXISTS(SELECT 1 FROM run_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM experiment_images WHERE image_id=image_blobs.id)`,
+        `DELETE FROM image_blobs WHERE last_used < ? AND NOT EXISTS(SELECT 1 FROM run_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM experiment_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM suite_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM flow_document_images WHERE image_id=image_blobs.id) AND NOT EXISTS(SELECT 1 FROM flow_images WHERE image_id=image_blobs.id)`,
       )
       .run(new Date(now - 7 * 86400000).toISOString());
   }
@@ -609,10 +627,15 @@ export class Store {
       throw new StoreError(409, 'Unsupported exchange record format.');
     return parsed.data;
   }
-  saveDocuments(documents: InputDocument[], actor: string): SavedDocument[] {
+  saveDocuments(
+    documents: InputDocument[],
+    actor: string,
+    markExpected = true,
+  ): SavedDocument[] {
     this.actor(actor);
     const remember = (saved: SavedDocument, document: InputDocument) => {
       if (
+        markExpected &&
         document.kind === 'experiment-suite' &&
         document.cases.some((c) => c.expected && Object.keys(c.expected).length)
       )
@@ -658,21 +681,37 @@ export class Store {
             actor,
             saved.createdAt,
           );
+        if (document.kind === 'experiment-suite')
+          document.cases
+            .flatMap((c) => c.imageIds ?? [])
+            .forEach((imageId, position) => {
+              this.getImage(imageId);
+              this.db
+                .prepare('INSERT INTO suite_images VALUES (?,?,?)')
+                .run(saved.id, position, imageId);
+            });
         return remember(saved, document);
       }),
     );
   }
+  private expectedExposureTable(id: string) {
+    return this.db.prepare('SELECT 1 FROM flow_documents WHERE id=?').get(id)
+      ? 'flow_expected_exposures'
+      : 'expected_exposures';
+  }
   noteExpectedSeen(suiteId: string, actor: string) {
     this.actor(actor);
     this.db
-      .prepare('INSERT OR IGNORE INTO expected_exposures VALUES (?,?,?)')
+      .prepare(
+        `INSERT OR IGNORE INTO ${this.expectedExposureTable(suiteId)} VALUES (?,?,?)`,
+      )
       .run(suiteId, actor, new Date().toISOString());
   }
   expectedSeenAt(suiteId: string, actor: string): string | null {
     return (
       (this.db
         .prepare(
-          'SELECT seen_at FROM expected_exposures WHERE suite_id=? AND user_id=?',
+          `SELECT seen_at FROM ${this.expectedExposureTable(suiteId)} WHERE suite_id=? AND user_id=?`,
         )
         .get(suiteId, actor)?.seen_at as string | undefined) ?? null
     );
@@ -744,6 +783,189 @@ export class Store {
       }
       this.putSuiteExecution(e);
     }
+  }
+  listFlowDocuments() {
+    return this.db
+      .prepare(
+        'SELECT id,kind,name,version,user_id AS createdByUserId,created_at AS createdAt FROM flow_documents ORDER BY rowid DESC',
+      )
+      .all() as unknown as {
+      id: string;
+      kind: FlowDocument['kind'];
+      name: string;
+      version: number;
+      createdByUserId: string;
+      createdAt: string;
+    }[];
+  }
+  getFlowDocument(id: string): FlowDocument {
+    const row = this.db
+      .prepare('SELECT body FROM flow_documents WHERE id=?')
+      .get(id);
+    if (!row) throw new StoreError(404, 'Flow document was not found.');
+    const parsed = flowDocumentSchema.safeParse(JSON.parse(String(row.body)));
+    if (!parsed.success)
+      throw new StoreError(409, 'Unsupported flow document format.');
+    return parsed.data;
+  }
+  saveFlowDocument(input: FlowDocument, actor: string) {
+    const document = flowDocumentSchema.parse(input);
+    this.actor(actor);
+    return this.transaction(() => {
+      const found = this.listFlowDocuments().find(
+        (d) =>
+          d.kind === document.kind &&
+          d.name === document.name &&
+          d.version === document.version,
+      );
+      if (found) {
+        if (
+          JSON.stringify(document) !==
+          JSON.stringify(this.getFlowDocument(found.id))
+        )
+          throw new StoreError(
+            409,
+            'Increment version before changing a saved document.',
+          );
+        if (
+          document.kind === 'flow-suite' &&
+          document.cases.some((c) => c.expected)
+        )
+          this.noteExpectedSeen(found.id, actor);
+        return found;
+      }
+      const saved = {
+        id: randomUUID(),
+        kind: document.kind,
+        name: document.name,
+        version: document.version,
+        createdByUserId: actor,
+        createdAt: new Date().toISOString(),
+      };
+      this.db
+        .prepare('INSERT INTO flow_documents VALUES (?,?,?,?,?,?,?)')
+        .run(
+          saved.id,
+          document.kind,
+          document.name,
+          document.version,
+          JSON.stringify(document),
+          actor,
+          saved.createdAt,
+        );
+      if (document.kind === 'flow-suite') {
+        for (const item of document.cases)
+          (item.imageIds ?? []).forEach((imageId, position) => {
+            this.getImage(imageId);
+            this.db
+              .prepare('INSERT INTO flow_document_images VALUES (?,?,?,?)')
+              .run(saved.id, item.id, position, imageId);
+          });
+        if (document.cases.some((c) => c.expected))
+          this.noteExpectedSeen(saved.id, actor);
+      }
+      return saved;
+    });
+  }
+  putFlowExecution(input: FlowExecution) {
+    const execution = flowExecutionSchema.parse(input);
+    this.transaction(() => {
+      this.db
+        .prepare(
+          'INSERT INTO flow_executions VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body',
+        )
+        .run(execution.id, execution.flowId, JSON.stringify(execution));
+      this.db
+        .prepare('DELETE FROM flow_images WHERE execution_id=?')
+        .run(execution.id);
+      (execution.input.imageIds ?? []).forEach((imageId, position) => {
+        this.getImage(imageId);
+        this.db
+          .prepare('INSERT INTO flow_images VALUES (?,?,?)')
+          .run(execution.id, position, imageId);
+      });
+      this.db
+        .prepare('INSERT OR IGNORE INTO flow_assignments VALUES (?,?)')
+        .run(execution.id, execution.userId);
+    });
+  }
+  getFlowExecution(id: string): FlowExecution {
+    const row = this.db
+      .prepare('SELECT body FROM flow_executions WHERE id=?')
+      .get(id);
+    if (!row) throw new StoreError(404, 'Flow execution was not found.');
+    const parsed = flowExecutionSchema.safeParse(JSON.parse(String(row.body)));
+    if (!parsed.success)
+      throw new StoreError(409, 'Unsupported flow execution format.');
+    return parsed.data;
+  }
+  listFlowExecutions() {
+    return this.db
+      .prepare('SELECT id FROM flow_executions ORDER BY rowid DESC')
+      .all()
+      .map((r) => this.getFlowExecution(String(r.id)));
+  }
+  saveFlowRaw(id: string, nodeId: string, response: unknown) {
+    this.db
+      .prepare('INSERT INTO flow_raw_responses VALUES (?,?,?)')
+      .run(id, nodeId, JSON.stringify(response));
+  }
+  flowRevealed(id: string, actor: string) {
+    this.actor(actor);
+    return Boolean(
+      this.db
+        .prepare(
+          'SELECT 1 FROM flow_exposures WHERE execution_id=? AND user_id=?',
+        )
+        .get(id, actor),
+    );
+  }
+  revealFlow(id: string, actor: string) {
+    this.assignFlow(id, actor);
+    this.db
+      .prepare('INSERT OR IGNORE INTO flow_exposures VALUES (?,?,?)')
+      .run(id, actor, new Date().toISOString());
+  }
+  assignFlow(id: string, actor: string) {
+    this.getFlowExecution(id);
+    this.actor(actor);
+    this.db
+      .prepare('INSERT OR IGNORE INTO flow_assignments VALUES (?,?)')
+      .run(id, actor);
+  }
+  flowAssignments(id: string) {
+    return this.db
+      .prepare(
+        'SELECT user_id FROM flow_assignments WHERE execution_id=? ORDER BY rowid',
+      )
+      .all(id)
+      .map((r) => String(r.user_id));
+  }
+  flowRevisions(id: string, actor?: string): FlowRevision[] {
+    return this.db
+      .prepare(
+        `SELECT body FROM flow_revisions WHERE execution_id=? ${actor ? 'AND user_id=?' : ''} ORDER BY rowid`,
+      )
+      .all(...(actor ? [id, actor] : [id]))
+      .map((r) => flowRevisionSchema.parse(JSON.parse(String(r.body))));
+  }
+  saveFlowRevision(revision: FlowRevision) {
+    const value = flowRevisionSchema.parse(revision);
+    this.db
+      .prepare('INSERT INTO flow_revisions VALUES (?,?,?,?,?)')
+      .run(
+        value.id,
+        value.executionId,
+        value.userId,
+        value.kind,
+        JSON.stringify(value),
+      );
+  }
+  finalizeFlowRevision(revision: FlowRevision) {
+    this.transaction(() => {
+      this.saveFlowRevision(revision);
+      this.revealFlow(revision.executionId, revision.userId);
+    });
   }
   close() {
     this.db.close();

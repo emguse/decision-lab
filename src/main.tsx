@@ -19,6 +19,7 @@ import { ImageAttachments } from './Images';
 import { ResultView } from './ResultView';
 import { EvaluationWorkspace } from './Evaluation';
 import { SuitesWorkspace } from './Suites';
+import { FlowsWorkspace } from './Flows';
 import type { HelpTopic } from './Help';
 const Help = React.lazy(() =>
   import('./Help').then((module) => ({ default: module.Help })),
@@ -55,7 +56,7 @@ function App({
   const request = <T,>(path: string, body?: unknown, method = 'POST') =>
     api<T>(path, body, method, user.id);
   const [workspace, setWorkspace] = useState<
-    'playground' | 'evaluation' | 'suites'
+    'playground' | 'evaluation' | 'suites' | 'flows'
   >('playground');
   const [helpTopic, setHelpTopic] = useState<HelpTopic | null>(null);
   const helpScroll = useRef(0);
@@ -474,6 +475,12 @@ function App({
               Suites
             </button>
             <button
+              aria-pressed={!helpTopic && workspace === 'flows'}
+              onClick={() => void navigate(() => setWorkspace('flows'))}
+            >
+              Flows
+            </button>
+            <button
               aria-pressed={helpTopic !== null}
               onClick={() => void openHelp('guide')}
             >
@@ -497,7 +504,15 @@ function App({
             </React.Suspense>
           )}
           <div hidden={helpTopic !== null}>
-            {workspace === 'suites' ? (
+            {workspace === 'flows' ? (
+              <FlowsWorkspace
+                key={user.id}
+                user={user}
+                users={users}
+                config={config}
+                initialProvider={provider}
+              />
+            ) : workspace === 'suites' ? (
               <SuitesWorkspace
                 user={user}
                 config={config}

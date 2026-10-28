@@ -20,3 +20,5 @@ These documents are implementation plans. Use the guides above for current behav
 
 - [Accuracy evaluation plan](accuracy-evaluation-plan.md)
 - [Local provider plan](local-decision-provider-plan.md)
+
+- [Decision flows](decision-flows.md): card construction, execution traces, image Suites, blind evaluation and benchmark preparation.
