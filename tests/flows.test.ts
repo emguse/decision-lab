@@ -21,6 +21,7 @@ import {
   validateFlow,
   selectBranch,
   gradeFlow,
+  type Condition,
   type FlowExecution,
   type Flow,
 } from '../shared/flows';
@@ -674,6 +675,180 @@ describe('flow metric calculations', () => {
         input: 'uncertain',
         decisions: {},
       });
+    } finally {
+      c.store.close();
+    }
+  });
+});
+
+describe('gold routing for skipped judgments', () => {
+  it('grades deterministic rules independently of the path taken and leaves missing or confidence-dependent rules ungraded', async () => {
+    const c = setup();
+    try {
+      const e = c.service.create(
+        c.flowId,
+        { state: 'uncertain' },
+        'jev',
+        'jev-test',
+        c.actor,
+        context,
+      );
+      await c.service.run(e.id, async (query) => {
+        const response = validateResponse(fixture, query);
+        if (response.answers.department.type === 'choice')
+          response.answers.department.confidence = 0.1;
+        return { response, metadata: context.metadata, elapsedMs: 1 };
+      });
+      const execution = c.store.getFlowExecution(e.id);
+      expect(execution.path).toEqual(['input', 'triage', 'review']);
+      expect(execution.steps.map((step) => step.nodeId)).toEqual(['triage']);
+      const labels = {
+        resultId: 'urgent_billing',
+        path: ['input', 'triage', 'priority', 'urgent'],
+        judgments: {
+          priority: { is_urgent: true, department: 'billing', frustration: 2 },
+        },
+      };
+      const configurations: {
+        condition: Condition;
+        target: string;
+        pass: boolean | null;
+        actualTarget: string | null;
+      }[] = [
+        {
+          condition: {
+            type: 'noul',
+            question: 'is_urgent',
+            operator: 'gte',
+            value: 0.8,
+          },
+          target: 'urgent',
+          pass: true,
+          actualTarget: 'urgent',
+        },
+        {
+          condition: {
+            type: 'noul',
+            question: 'is_urgent',
+            operator: 'gte',
+            value: 0.8,
+          },
+          target: 'billing',
+          pass: false,
+          actualTarget: 'billing',
+        },
+        {
+          condition: {
+            type: 'choice',
+            question: 'department',
+            value: 'billing',
+          },
+          target: 'urgent',
+          pass: true,
+          actualTarget: 'urgent',
+        },
+        {
+          condition: { type: 'score', question: 'frustration', min: 2, max: 2 },
+          target: 'billing',
+          pass: false,
+          actualTarget: 'billing',
+        },
+        {
+          condition: {
+            type: 'confidence',
+            question: 'department',
+            operator: 'gte',
+            value: 0.8,
+          },
+          target: 'billing',
+          pass: null,
+          actualTarget: null,
+        },
+      ];
+      for (const config of configurations) {
+        const snapshot = structuredClone(execution);
+        const node = snapshot.flow.nodes.find((node) => node.id === 'priority');
+        if (node?.type !== 'decision') throw new Error('Missing judgment.');
+        node.branches.unshift({
+          conditions: [config.condition],
+          target: config.target,
+        });
+        validateFlow(snapshot.flow, snapshot.definitions);
+        const graded = gradeFlow(snapshot, labels, exampleFlowSuite.settings);
+        expect(graded.routing).toEqual([
+          {
+            nodeId: 'priority',
+            expectedTarget: config.pass === null ? null : 'urgent',
+            actualTarget: config.actualTarget,
+            pass: config.pass,
+          },
+        ]);
+        expect(
+          graded.judgments.every(
+            (judgment) => judgment.missing && !judgment.pass,
+          ),
+        ).toBe(true);
+        expect(graded.resultPass).toBe(false);
+      }
+      expect(
+        gradeFlow(
+          execution,
+          { ...labels, judgments: { priority: { department: 'billing' } } },
+          exampleFlowSuite.settings,
+        ).routing,
+      ).toEqual([
+        {
+          nodeId: 'priority',
+          expectedTarget: null,
+          actualTarget: null,
+          pass: null,
+        },
+      ]);
+      expect(
+        gradeFlow(
+          execution,
+          {
+            resultId: 'billing',
+            path: ['input', 'triage', 'priority', 'billing'],
+            judgments: { priority: { is_urgent: false } },
+          },
+          exampleFlowSuite.settings,
+        ).routing,
+      ).toEqual([
+        {
+          nodeId: 'priority',
+          expectedTarget: 'billing',
+          actualTarget: 'billing',
+          pass: true,
+        },
+      ]);
+      expect(
+        gradeFlow(
+          execution,
+          { ...labels, judgments: { triage: { department: 'billing' } } },
+          exampleFlowSuite.settings,
+        ).routing,
+      ).toEqual([
+        {
+          nodeId: 'triage',
+          expectedTarget: null,
+          actualTarget: 'review',
+          pass: null,
+        },
+      ]);
+      const withoutExpectedPath = gradeFlow(
+        execution,
+        { resultId: labels.resultId, judgments: labels.judgments },
+        exampleFlowSuite.settings,
+      );
+      expect(withoutExpectedPath.routing).toEqual([
+        {
+          nodeId: 'priority',
+          expectedTarget: null,
+          actualTarget: 'urgent',
+          pass: null,
+        },
+      ]);
     } finally {
       c.store.close();
     }

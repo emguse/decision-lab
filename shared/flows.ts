@@ -438,53 +438,56 @@ export function gradeFlow(
       }));
     },
   );
-  const routing = Object.entries(labels.judgments ?? {}).flatMap(
-    ([nodeId, expected]) => {
-      const node = execution.flow.nodes.find((n) => n.id === nodeId);
-      const step = execution.steps.find((s) => s.nodeId === nodeId);
-      if (node?.type !== 'decision' || !step) return [];
-      const deterministic = (c: Condition): boolean | undefined => {
-        const value = expected[c.question];
-        if (value === undefined || c.type === 'confidence') return undefined;
-        if (c.type === 'choice') return value === c.value;
-        if (c.type === 'noul')
-          return c.operator === 'gte'
-            ? Number(value) >= c.value
-            : Number(value) < c.value;
-        return (
-          Number(value) >= (c.min ?? -Infinity) &&
-          Number(value) <= (c.max ?? Infinity)
-        );
-      };
-      let target = node.defaultTarget;
-      for (const b of node.branches) {
-        const values = b.conditions.map(deterministic);
-        if (values.some((v) => v === false)) continue;
-        if (values.some((v) => v === undefined))
-          return [
-            {
-              nodeId,
-              expectedTarget: null,
-              actualTarget: step.target,
-              pass: null,
-            },
-          ];
-        target = b.target;
-        break;
-      }
-      const pathIndex = labels.path?.indexOf(nodeId) ?? -1;
-      const expectedTarget =
-        pathIndex >= 0 ? labels.path?.[pathIndex + 1] : undefined;
-      return [
-        {
-          nodeId,
-          expectedTarget: expectedTarget ?? null,
-          actualTarget: target,
-          pass: expectedTarget ? target === expectedTarget : null,
-        },
-      ];
-    },
-  );
+  const routing = Object.entries(labels.judgments ?? {}).flatMap<{
+    nodeId: string;
+    expectedTarget: string | null;
+    actualTarget: string | null;
+    pass: boolean | null;
+  }>(([nodeId, expected]) => {
+    const node = execution.flow.nodes.find((n) => n.id === nodeId);
+    const step = execution.steps.find((s) => s.nodeId === nodeId);
+    if (node?.type !== 'decision') return [];
+    const deterministic = (c: Condition): boolean | undefined => {
+      const value = expected[c.question];
+      if (value === undefined || c.type === 'confidence') return undefined;
+      if (c.type === 'choice') return value === c.value;
+      if (c.type === 'noul')
+        return c.operator === 'gte'
+          ? Number(value) >= c.value
+          : Number(value) < c.value;
+      return (
+        Number(value) >= (c.min ?? -Infinity) &&
+        Number(value) <= (c.max ?? Infinity)
+      );
+    };
+    let target = node.defaultTarget;
+    for (const b of node.branches) {
+      const values = b.conditions.map(deterministic);
+      if (values.some((v) => v === false)) continue;
+      if (values.some((v) => v === undefined))
+        return [
+          {
+            nodeId,
+            expectedTarget: null,
+            actualTarget: step?.target ?? null,
+            pass: null,
+          },
+        ];
+      target = b.target;
+      break;
+    }
+    const pathIndex = labels.path?.indexOf(nodeId) ?? -1;
+    const expectedTarget =
+      pathIndex >= 0 ? labels.path?.[pathIndex + 1] : undefined;
+    return [
+      {
+        nodeId,
+        expectedTarget: expectedTarget ?? null,
+        actualTarget: target,
+        pass: expectedTarget ? target === expectedTarget : null,
+      },
+    ];
+  });
   return {
     resultPass:
       execution.status === 'completed' &&
