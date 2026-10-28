@@ -146,6 +146,11 @@ This bounded intent comparison is not the full 77-class benchmark. The source is
 CC-BY-4.0; retain its attribution and cite Casanueva et al., *Efficient Intent
 Detection with Dual Sentence Encoders* (2020). Evidence groups hash the trimmed
 original utterance so identical source inputs cannot cross partitions unnoticed.
+Result and destination IDs derive from category names, so reordering or expanding
+`--categories` preserves each intent's identity. Choice options and branches retain
+the supplied order. The `banking77-choice-v2` transform replaces positional result
+IDs; regenerate both baseline and variants with new document versions when
+comparing older prepared bundles. Existing saved documents and exports stay unchanged.
 
 For [Open Images](https://storage.googleapis.com/openimages/web/factsfigures.html),
 use human-verified image-level labels (`ImageID,LabelName,Confidence`). Only explicit

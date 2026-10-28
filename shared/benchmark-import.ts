@@ -68,6 +68,9 @@ export function parseCsv(source: string): string[][] {
 function digest(value: string) {
   return createHash('sha256').update(value).digest('hex');
 }
+function bankingIntentId(category: string) {
+  return `intent_${createHash('sha256').update(category).digest('base64url')}`;
+}
 function sample<T>(rows: T[], seed: number, limit: number) {
   const copy = [...rows];
   let state = seed >>> 0;
@@ -133,17 +136,17 @@ export function banking77Bundle(
         type: 'decision',
         title: 'Select intent',
         definition: { name: definition.name, version: definition.version },
-        branches: categories.map((value, i) => ({
+        branches: categories.map((value) => ({
           conditions: [{ type: 'choice', question: 'intent', value }],
-          target: `intent_${i}`,
+          target: bankingIntentId(value),
         })),
         defaultTarget: 'review',
       },
-      ...categories.map((value, i) => ({
-        id: `intent_${i}`,
+      ...categories.map((value) => ({
+        id: bankingIntentId(value),
         type: 'result',
         title: value,
-        resultId: `intent_${i}`,
+        resultId: bankingIntentId(value),
         description: value,
       })),
       {
@@ -165,7 +168,7 @@ export function banking77Bundle(
     version: options.version,
     flow: { name: flow.name, version: flow.version },
     cases: sample(candidates, options.seed, options.limit).map(({ r, i }) => {
-      const result = `intent_${categories.indexOf(r[categoryIndex])}`;
+      const result = bankingIntentId(r[categoryIndex]);
       return {
         id: `banking_${i}`,
         state: r[textIndex],
@@ -175,7 +178,7 @@ export function banking77Bundle(
           revision: options.revision,
           sourceCaseId: `${options.split}/${i}`,
           license: 'CC-BY-4.0',
-          transformVersion: `banking77-choice-v1;seed=${options.seed};selection=${digest(JSON.stringify(categories)).slice(0, 16)}`,
+          transformVersion: `banking77-choice-v2;seed=${options.seed};selection=${digest(JSON.stringify(categories)).slice(0, 16)}`,
           language: 'en',
           domain: 'public-intent-classification',
           evidenceGroup: digest(r[textIndex].trim()),
