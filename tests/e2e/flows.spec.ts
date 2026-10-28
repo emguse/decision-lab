@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { test, expect } from '@playwright/test';
 import { mockApi } from './mock';
 import { FlowService } from '../../server/flows';
@@ -346,5 +347,235 @@ test('adds parsed JSON or literal text to a Suite and rejects invalid JSON witho
   );
   expect(textRun.input.state).toBe(source);
   expect(mock.calls()).toBe(6);
+  mock.store.close();
+});
+
+test('blocks new cases during incomplete or failed input image uploads and retains ordered originals', async ({
+  page,
+}) => {
+  const mock = await mockApi(page, { local: true, vision: true });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Flows', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Load example flow', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Save flow', exact: true }).click();
+  await page
+    .getByRole('combobox', { name: 'Connection', exact: true })
+    .selectOption('strands-local');
+  await page
+    .getByRole('button', { name: 'Create suite for this flow', exact: true })
+    .click();
+  const addCase = page.getByRole('button', {
+    name: 'Add case from current input',
+    exact: true,
+  });
+  const attachments = page
+    .getByRole('region', { name: 'Image attachments', exact: true })
+    .first();
+  const releases: (() => void)[] = [];
+  let uploads = 0;
+  const gates = [0, 1].map(
+    () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      }),
+  );
+  await page.route('**/api/images', async (route) => {
+    if (route.request().method() === 'POST') {
+      const gate = gates[uploads++];
+      await gate;
+    }
+    await route.fallback();
+  });
+  const files = await Promise.all(
+    [2, 3].map(async (width) => ({
+      name: `original-${width}.png`,
+      mimeType: 'image/png',
+      buffer: await sharp({
+        create: { width, height: 2, channels: 3, background: '#f00' },
+      })
+        .png()
+        .toBuffer(),
+    })),
+  );
+  try {
+    await attachments.getByLabel('Add images').setInputFiles(files);
+    await expect.poll(() => uploads).toBe(1);
+    await expect(
+      attachments.getByText('Uploading images…', { exact: true }),
+    ).toBeVisible();
+    await expect(addCase).toBeDisabled();
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toHaveCount(0);
+    releases[0]();
+    await expect.poll(() => uploads).toBe(2);
+    await expect(attachments.getByAltText('Input image 1')).toBeVisible();
+    await expect(addCase).toBeDisabled();
+    releases[1]();
+    await expect(
+      attachments.getByText('Uploading images…', { exact: true }),
+    ).toHaveCount(0);
+    await expect(attachments.getByAltText('Input image 2')).toBeVisible();
+    await expect(addCase).toBeEnabled();
+    await attachments.getByLabel('Move image 2 left').click();
+    await addCase.click();
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toHaveCount(1);
+    await attachments.getByLabel('Add images').setInputFiles({
+      name: 'invalid.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('invalid image bytes'),
+    });
+    await expect(attachments.getByRole('alert')).toBeVisible();
+    await expect(addCase).toBeDisabled();
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toHaveCount(1);
+    await attachments
+      .getByRole('button', { name: 'Dismiss upload error', exact: true })
+      .click();
+    await expect(addCase).toBeEnabled();
+    await page
+      .getByRole('button', { name: 'Save flow suite', exact: true })
+      .click();
+    await expect(
+      page.getByRole('button', {
+        name: 'Run flow suite sequentially',
+        exact: true,
+      }),
+    ).toBeEnabled();
+    const suiteId = mock.store
+      .listFlowDocuments()
+      .find((document) => document.kind === 'flow-suite')!.id;
+    const suite = mock.store.getFlowDocument(suiteId);
+    if (suite.kind !== 'flow-suite') throw new Error('Expected flow Suite.');
+    const imageIds = mock.bodies
+      .filter(
+        (item) =>
+          item.path === '/api/images' &&
+          typeof (item.body as { id?: unknown }).id === 'string',
+      )
+      .map((item) => (item.body as { id: string }).id);
+    expect(suite.cases[0].imageIds).toEqual([...imageIds].reverse());
+    expect(suite.cases[0].imageIds).toHaveLength(2);
+    expect(mock.store.getImage(suite.cases[0].imageIds![0]).width).toBe(3);
+    await page
+      .getByRole('button', { name: 'Run flow suite sequentially', exact: true })
+      .click();
+    await expect(page.locator('.flow-execution-select')).toContainText(
+      'completed',
+    );
+    const execution = mock.store.listFlowExecutions()[0];
+    expect(execution.input.imageIds).toEqual(suite.cases[0].imageIds);
+    expect(
+      execution.steps.every(
+        (step) =>
+          JSON.stringify(step.query.imageIds) ===
+          JSON.stringify(suite.cases[0].imageIds),
+      ),
+    ).toBe(true);
+    expect(mock.localCalls()).toBe(2);
+    expect(mock.calls()).toBe(0);
+  } finally {
+    releases.forEach((release) => release());
+    mock.store.close();
+  }
+});
+
+test('gives independent local cases unique evidence identities and retains identities for deliberate variants', async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Flows', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Load example flow', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Save flow', exact: true }).click();
+  const saved = [];
+  for (const partition of ['tuning', 'evaluation'] as const) {
+    await page
+      .getByRole('button', { name: 'Create suite for this flow', exact: true })
+      .click();
+    await page
+      .getByRole('textbox', { name: 'Suite name', exact: true })
+      .fill(`Independent ${partition}`);
+    await page
+      .getByRole('textbox', { name: 'Original input', exact: true })
+      .fill(`Unrelated original input for ${partition}`);
+    await page
+      .getByRole('button', { name: 'Add case from current input', exact: true })
+      .click();
+    await expect(
+      page.getByRole('textbox', { name: 'Case ID', exact: true }),
+    ).toHaveValue('case_1');
+    await page
+      .getByRole('combobox', { name: 'Partition', exact: true })
+      .selectOption(partition);
+    await page
+      .getByRole('button', { name: 'Save flow suite', exact: true })
+      .click();
+    await expect(
+      page.getByRole('button', {
+        name: 'Run flow suite sequentially',
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    const info = mock.store
+      .listFlowDocuments()
+      .find(
+        (document) =>
+          document.kind === 'flow-suite' &&
+          document.name === `Independent ${partition}`,
+      )!;
+    const document = mock.store.getFlowDocument(info.id);
+    if (document.kind !== 'flow-suite') throw new Error('Expected flow Suite.');
+    saved.push(document);
+  }
+  const first = saved[0].cases[0].provenance,
+    second = saved[1].cases[0].provenance;
+  expect(first.evidenceGroup).not.toBe(second.evidenceGroup);
+  expect(first.sourceCaseId).not.toBe(second.sourceCaseId);
+  await page
+    .getByRole('button', {
+      name: 'Edit new version with expectations',
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole('textbox', { name: 'State (text)', exact: true })
+    .fill('Deliberate paraphrase of the evaluation input');
+  await page
+    .getByRole('button', { name: 'Save flow suite', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', {
+      name: 'Run flow suite sequentially',
+      exact: true,
+    }),
+  ).toBeEnabled();
+  const variantInfo = mock.store
+    .listFlowDocuments()
+    .find(
+      (document) => document.kind === 'flow-suite' && document.version === 2,
+    )!;
+  const variant = mock.store.getFlowDocument(variantInfo.id);
+  if (variant.kind !== 'flow-suite') throw new Error('Expected flow Suite.');
+  expect(variant.cases[0].provenance).toEqual(second);
+  const service = new FlowService(mock.store);
+  expect(() =>
+    service.save(
+      {
+        ...variant,
+        version: 3,
+        cases: [{ ...variant.cases[0], partition: 'tuning' }],
+      },
+      mock.store.actor(),
+    ),
+  ).toThrow('evidence group');
   mock.store.close();
 });

@@ -1825,11 +1825,14 @@ export function FlowsWorkspace({
               );
             })}
             <button
-              disabled={Boolean(suiteId) || suite.cases.length >= 100 || busy}
+              disabled={
+                Boolean(suiteId) || suite.cases.length >= 100 || busy || blocked
+              }
               onClick={() =>
                 void action(async () => {
                   const caseState = currentInputState();
                   const id = `case_${suite.cases.length + 1}`;
+                  const evidenceId = crypto.randomUUID();
                   setSuite({
                     ...suite,
                     cases: [
@@ -1842,12 +1845,12 @@ export function FlowsWorkspace({
                         provenance: {
                           source: 'local',
                           revision: '1',
-                          sourceCaseId: id,
+                          sourceCaseId: evidenceId,
                           license: 'user-provided',
                           transformVersion: '1',
                           language: 'ja',
                           domain: 'business-workflow',
-                          evidenceGroup: id,
+                          evidenceGroup: evidenceId,
                           labelOrigin: 'human',
                         },
                       },

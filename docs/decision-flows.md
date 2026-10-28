@@ -74,6 +74,9 @@ expectations** explicitly loads the expected labels and marks familiarity.
 
 Use provenance to retain source, immutable upstream revision, original case ID,
 license, transform version, language, domain, evidence group and label origin.
+Form-created original cases receive unique source-case and evidence-group IDs,
+independent of their position in a Suite. Editing a new version retains these
+IDs. Set a shared evidence group explicitly when creating related variants.
 All variants of the same photograph must share an evidence group and partition.
 Saving rejects a source/revision/evidence group used in both partitions across
 saved Suites. This requires correct provenance: arbitrary new source identities
