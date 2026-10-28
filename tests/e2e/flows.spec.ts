@@ -254,3 +254,97 @@ test('keeps the displayed and executed saved Suite aligned after delayed selecti
   expect(mock.calls()).toBe(4);
   mock.store.close();
 });
+
+test('adds parsed JSON or literal text to a Suite and rejects invalid JSON without adding a case', async ({
+  page,
+}) => {
+  const mock = await mockApi(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Flows', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Load example flow', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Save flow', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Create suite for this flow', exact: true })
+    .click();
+  await page
+    .getByRole('combobox', { name: 'Input format', exact: true })
+    .selectOption('json');
+  const input = page.getByRole('textbox', {
+    name: 'Original input',
+    exact: true,
+  });
+  await input.fill('{"amount":');
+  await page
+    .getByRole('button', { name: 'Add case from current input', exact: true })
+    .click();
+  await expect(page.getByRole('alert')).toContainText(/JSON/);
+  await expect(
+    page.getByRole('textbox', { name: 'Case ID', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Save flow suite', exact: true }),
+  ).toBeDisabled();
+  expect(mock.calls()).toBe(0);
+  const original = { amount: 100, customer: { id: 'a123' }, items: ['refund'] };
+  const source = JSON.stringify(original);
+  await input.fill(source);
+  await page
+    .getByRole('button', { name: 'Run decision flow', exact: true })
+    .click();
+  await expect(
+    page.getByText('Status: completed · Blind for this profile'),
+  ).toBeVisible();
+  const single = mock.store.listFlowExecutions()[0];
+  expect(single.input.state).toEqual(original);
+  await page
+    .getByRole('button', { name: 'Add case from current input', exact: true })
+    .click();
+  await expect(
+    page.getByRole('textbox', { name: 'Case ID', exact: true }),
+  ).toHaveCount(1);
+  await page
+    .getByRole('combobox', { name: 'Input format', exact: true })
+    .selectOption('text');
+  await page
+    .getByRole('button', { name: 'Add case from current input', exact: true })
+    .click();
+  await expect(
+    page.getByRole('textbox', { name: 'Case ID', exact: true }),
+  ).toHaveCount(2);
+  await page
+    .getByRole('button', { name: 'Save flow suite', exact: true })
+    .click();
+  const suiteId = mock.store
+    .listFlowDocuments()
+    .find((document) => document.kind === 'flow-suite')!.id;
+  const suite = mock.store.getFlowDocument(suiteId);
+  if (suite.kind !== 'flow-suite') throw new Error('Expected flow Suite.');
+  expect(suite.cases.map((item) => item.state)).toEqual([original, source]);
+  await page
+    .getByRole('button', { name: 'Run flow suite sequentially', exact: true })
+    .click();
+  await expect(page.locator('.flow-execution-select')).toHaveCount(2);
+  await expect(page.locator('.flow-execution-select').first()).toContainText(
+    'completed',
+  );
+  await expect(page.locator('.flow-execution-select').last()).toContainText(
+    'completed',
+  );
+  const runs = mock.store
+    .listFlowExecutions()
+    .filter((execution) => execution.suiteId === suiteId);
+  const jsonRun = runs.find(
+    (execution) => execution.caseId === suite.cases[0].id,
+  )!;
+  const textRun = runs.find(
+    (execution) => execution.caseId === suite.cases[1].id,
+  )!;
+  expect(jsonRun.steps.map((step) => step.query.state)).toEqual(
+    single.steps.map((step) => step.query.state),
+  );
+  expect(textRun.input.state).toBe(source);
+  expect(mock.calls()).toBe(6);
+  mock.store.close();
+});

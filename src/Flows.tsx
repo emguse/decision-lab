@@ -18,6 +18,7 @@ import {
   exampleFlowSuite,
 } from '../shared/flow-examples';
 import { serializeDocument, type Definition } from '../shared/exchange';
+import { requestSchema } from '../shared/schema';
 import type { LocalUser } from '../shared/evaluation';
 import type { AppConfig, ProviderId } from '../shared/providers';
 
@@ -445,6 +446,11 @@ export function FlowsWorkspace({
       setBusy(false);
       lock.current = false;
     }
+  }
+  function currentInputState() {
+    return requestSchema.shape.state.parse(
+      inputMode === 'json' ? JSON.parse(state) : state,
+    );
   }
   useEffect(() => {
     void refresh().catch((e) => setError(e.message));
@@ -1329,7 +1335,7 @@ export function FlowsWorkspace({
               const e = await request<Summary>(`flows/${flowId}/execute`, {
                 provider,
                 model,
-                state: inputMode === 'json' ? JSON.parse(state) : state,
+                state: currentInputState(),
                 imageIds,
               });
               setExecutionId(e.id);
@@ -1820,33 +1826,36 @@ export function FlowsWorkspace({
             })}
             <button
               disabled={Boolean(suiteId) || suite.cases.length >= 100 || busy}
-              onClick={() => {
-                const id = `case_${suite.cases.length + 1}`;
-                setSuite({
-                  ...suite,
-                  cases: [
-                    ...suite.cases,
-                    {
-                      id,
-                      state,
-                      imageIds,
-                      partition: 'evaluation',
-                      provenance: {
-                        source: 'local',
-                        revision: '1',
-                        sourceCaseId: id,
-                        license: 'user-provided',
-                        transformVersion: '1',
-                        language: 'ja',
-                        domain: 'business-workflow',
-                        evidenceGroup: id,
-                        labelOrigin: 'human',
+              onClick={() =>
+                void action(async () => {
+                  const caseState = currentInputState();
+                  const id = `case_${suite.cases.length + 1}`;
+                  setSuite({
+                    ...suite,
+                    cases: [
+                      ...suite.cases,
+                      {
+                        id,
+                        state: caseState,
+                        imageIds,
+                        partition: 'evaluation',
+                        provenance: {
+                          source: 'local',
+                          revision: '1',
+                          sourceCaseId: id,
+                          license: 'user-provided',
+                          transformVersion: '1',
+                          language: 'ja',
+                          domain: 'business-workflow',
+                          evidenceGroup: id,
+                          labelOrigin: 'human',
+                        },
                       },
-                    },
-                  ],
-                });
-                setSuiteId('');
-              }}
+                    ],
+                  });
+                  setSuiteId('');
+                })
+              }
             >
               Add case from current input
             </button>
