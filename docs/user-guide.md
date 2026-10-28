@@ -27,7 +27,7 @@ Confidence describes distribution concentration, not correctness. Score is the p
 
 ## Create an experiment suite with an LLM
 
-Experiment suites currently accept text/JSON cases only. Image cases and image import/export are not yet supported. Use Playground to run image inputs, save Experiments and Runs, and perform human evaluation.
+Experiment Suites accept text/JSON in schema 1 and ordered local original images in schema 2. Use **Case images** to save a new version. Playground and Flows also support images through compatible local connections. Portable image bundles remain deferred.
 
 1. Give a user-supplied LLM the [Exchange specification](experiment-exchange.md) and input examples. Ask it to produce a Decision Definition and Experiment Suite as separate files. The definition contains questions; the suite contains input cases and optional expectations. Decision Lab does not include an LLM authoring service.
 2. In the suite list, select input files or paste their contents. **Validate and preview** checks them; **Save input** imports them. Neither action calls a model.
@@ -73,3 +73,9 @@ When **Run decision** is disabled, **Run unavailable** below the button lists th
 The JSON editor uses `imageIds: ["<uploaded UUID>"]`, not Base64 or URLs. IDs are local database references, not portable exchange data. Experiment saving, history, copying a saved run to Playground, and human evaluation retain images in their original order. Viewing an input image does not reveal model predictions. Profile switching discards pending UI updates from the prior profile. The application shares local input data; profiles provide attribution rather than authentication.
 
 Image-enabled Suite cases and portable image import/export are deferred. Existing text-only Suite and exchange workflows are unchanged.
+
+## Decision flows and image Suites
+
+Open **Flows** to connect Input, Judgment and Final result cards. Start with **Load example flow**, configure ordered branches and a required default in the inspector, save a version, select one connection and run. Finalize human labels before revealing to preserve blindness. The revealed graph highlights the execution path and shows each answer and selected condition. Flow Suites evaluate final outcomes, optional intermediate judgments and paths, with domain and calibration metrics. See [Decision flows](decision-flows.md).
+
+In existing Suites, **Case images** attaches ordered local originals and saves a new schema-2 version. Unexecuted saved Suites retain the originals. Exports contain local references; portable bundles with image bytes remain a later extension. Image-incompatible connections fail explicitly.

@@ -71,6 +71,9 @@ export class ExchangeService {
     if (new Set(keys).size !== keys.length)
       throw new StoreError(400, 'The same document cannot be supplied twice.');
     for (const document of documents) {
+      if (document.kind === 'experiment-suite')
+        for (const item of document.cases)
+          this.store.resolveImages(item.imageIds);
       const existing = this.store
         .listDocuments()
         .find(
@@ -176,7 +179,7 @@ export class ExchangeService {
     if (definition.kind !== 'decision-definition')
       throw new StoreError(409, 'The decision definition is invalid.');
     const execution: SuiteExecution = {
-      formatVersion: 1,
+      formatVersion: suite.schemaVersion === 2 ? 2 : 1,
       id: randomUUID(),
       suiteId,
       userId: this.store.actor(actor),
@@ -243,6 +246,7 @@ export class ExchangeService {
             {
               model: e.model,
               state: input.state,
+              ...(input.imageIds?.length ? { imageIds: input.imageIds } : {}),
               questions: e.definition.questions,
             },
             `${e.suite.name} / ${item.caseId}`.slice(0, 120),

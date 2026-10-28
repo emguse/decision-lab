@@ -4,7 +4,7 @@ A local lab for typed decisions with Jev, Strands Decider, Clef, and configured 
 
 ## Quick start
 
-Image inputs are currently available in Playground. Experiment suites accept text/JSON cases only; image cases and image import/export are not yet supported.
+Image inputs are available in Playground, decision flows and schema-2 Suites through compatible local connections. Saved Suites retain original images before execution; exports reference the local database. Portable image bundles are deferred.
 
 Requires Node.js 22.16+ and npm.
 
@@ -31,3 +31,7 @@ Ready-to-import [exchange examples](examples/exchange/) are available in YAML an
 ## License
 
 Decision Lab is licensed under the [MIT License](LICENSE), copyright 2026 emguse and contributors. Third-party dependencies, the installed TypeSafe skill, and separately installed model/runtime components retain their own licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md). Strands Decider, its v19 adapter/head, and the Qwen3.5 base model are Apache-2.0, not covered by this application's MIT grant.
+
+## Decision flows
+
+The **Flows** workspace connects versioned judgments to business results, retains execution paths and supports blind flow-Suite evaluation. Existing Suites also accept ordered local images in schema 2. See [Decision flows](docs/decision-flows.md) for construction, evaluation metrics, dataset preparation and limits.

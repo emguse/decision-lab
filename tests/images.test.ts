@@ -1,3 +1,4 @@
+import { DROP_FLOW_TABLES } from './fixture';
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { randomUUID } from 'node:crypto';
@@ -428,7 +429,8 @@ it('migrates schema 4, preserves JSON, restores backup, and cleans only expired 
     let db = new DatabaseSync(path);
     const legacy = db.prepare('SELECT body FROM experiments').get()!.body;
     db.exec(
-      'DROP TABLE run_images; DROP TABLE experiment_images; DROP TABLE image_uploads; DROP TABLE image_blobs; PRAGMA user_version=4;',
+      DROP_FLOW_TABLES +
+        'DROP TABLE run_images; DROP TABLE experiment_images; DROP TABLE image_uploads; DROP TABLE image_blobs; PRAGMA user_version=4;',
     );
     db.close();
     store = await Store.open(path);

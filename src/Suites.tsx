@@ -2,6 +2,7 @@ import { exampleDefinition, exampleSuite } from '../shared/exchange-examples';
 import { serializeDocument } from '../shared/exchange';
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
+import { ImageAttachments, ImageGallery } from './Images';
 import type { AppConfig, ProviderId } from '../shared/providers';
 import type { LocalUser } from '../shared/evaluation';
 import type {
@@ -31,7 +32,11 @@ function download(file: ExportFile) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 interface SuiteDetail extends Omit<Suite, 'cases'> {
-  cases: { id: string; state: Suite['cases'][number]['state'] }[];
+  cases: {
+    id: string;
+    state: Suite['cases'][number]['state'];
+    imageIds?: string[];
+  }[];
   expectedSeenAt: string | null;
   executions: SuiteProgress[];
 }
@@ -82,6 +87,9 @@ export function SuitesWorkspace({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
+  const [caseImages, setCaseImages] = useState<Record<string, string[]>>({});
+  const [imageBlocks, setImageBlocks] = useState<Record<string, boolean>>({});
+  const [imageVersion, setImageVersion] = useState(2);
   const [source, setSource] = useState<LabelSource>('expected');
   const [result, setResult] = useState<ExperimentResults | null>(null);
   const [customSettings, setCustomSettings] = useState(false);
@@ -149,6 +157,8 @@ export function SuitesWorkspace({
   }, []);
   useEffect(() => {
     setDetail(null);
+    setCaseImages({});
+    setImageBlocks({});
     setResult(null);
     if (!selectedId) return;
     let active = true,
@@ -233,12 +243,67 @@ export function SuitesWorkspace({
         </div>
       </header>
       <div className="setup" aria-label="Suite image support">
-        <strong>
-          Image inputs are not yet supported in Experiment suites.
-        </strong>{' '}
-        Suites accept text/JSON cases only. Use Playground for image runs and
-        human evaluation. Image import/export is not yet supported.
+        Image cases use schemaVersion 2 and local image references. Attach
+        images to saved cases and save a new Suite version. Portable image
+        bundles are deferred.
       </div>
+      {detail && (
+        <details className="panel">
+          <summary>Case images</summary>
+          <label>
+            New Suite version
+            <input
+              type="number"
+              min={detail.version + 1}
+              value={Math.max(imageVersion, detail.version + 1)}
+              onChange={(e) => setImageVersion(Number(e.target.value))}
+            />
+          </label>
+          {detail.cases.map((item) => (
+            <fieldset key={item.id}>
+              <legend>{item.id}</legend>
+              <ImageGallery ids={item.imageIds} />
+              <ImageAttachments
+                ids={caseImages[item.id] ?? item.imageIds ?? []}
+                userId={user.id}
+                disabled={busy}
+                onChange={(ids) =>
+                  setCaseImages((prev) => ({ ...prev, [item.id]: ids }))
+                }
+                onBlocked={(value) =>
+                  setImageBlocks((prev) =>
+                    prev[item.id] === value
+                      ? prev
+                      : { ...prev, [item.id]: value },
+                  )
+                }
+              />
+            </fieldset>
+          ))}
+          <button
+            disabled={busy || Object.values(imageBlocks).some(Boolean)}
+            onClick={() =>
+              void action(async () => {
+                const saved = await request<SavedDocument>(
+                  `suites/${selectedId}/images`,
+                  {
+                    version: Math.max(imageVersion, detail.version + 1),
+                    images: caseImages,
+                  },
+                );
+                setCaseImages({});
+                setImageBlocks({});
+                onSelect(saved.id);
+                setExecutionId('');
+                setDocuments(await request('exchange/documents'));
+                setNotice('New image Suite version saved.');
+              })
+            }
+          >
+            Save case images as new version
+          </button>
+        </details>
+      )}
       {error && (
         <div className="alert" role="alert">
           {error}

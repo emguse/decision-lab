@@ -64,7 +64,7 @@ export const definitionSchema = z
       .refine((v) => Object.keys(v).length > 0, 'Add a question'),
   })
   .strict();
-export const suiteSchema = z
+const suiteV1Schema = z
   .object({
     kind: z.literal('experiment-suite'),
     schemaVersion: z.literal(1),
@@ -76,6 +76,7 @@ export const suiteSchema = z
           .object({
             id: identifier,
             state: requestSchema.shape.state,
+            imageIds: requestSchema.shape.imageIds,
             expected: labelsSchema.optional(),
             note: z.string().max(4000).optional(),
           })
@@ -92,10 +93,29 @@ export const suiteSchema = z
       .default({ threshold: 0.5, tolerance: 0.5 }),
   })
   .strict();
-export const inputDocumentSchema = z.discriminatedUnion('kind', [
-  definitionSchema,
-  suiteSchema,
-]);
+const suiteV2Schema = suiteV1Schema.extend({
+  schemaVersion: z.literal(2),
+  cases: z
+    .array(
+      suiteV1Schema.shape.cases.element.extend({
+        imageIds: requestSchema.shape.imageIds,
+      }),
+    )
+    .min(1)
+    .max(100)
+    .refine(
+      (v) => new Set(v.map((c) => c.id)).size === v.length,
+      'Duplicate case ID',
+    ),
+});
+export const suiteSchema = z
+  .discriminatedUnion('schemaVersion', [suiteV1Schema, suiteV2Schema])
+  .refine(
+    (s) =>
+      s.schemaVersion === 2 || s.cases.every((c) => c.imageIds === undefined),
+    'Image cases require schemaVersion 2',
+  );
+export const inputDocumentSchema = z.union([definitionSchema, suiteSchema]);
 export type Definition = z.infer<typeof definitionSchema>;
 export type Suite = z.infer<typeof suiteSchema>;
 export type InputDocument = Definition | Suite;
@@ -121,7 +141,7 @@ export interface SuiteCaseExecution {
   attempts: Attempt[];
 }
 export interface SuiteExecution {
-  formatVersion: 1;
+  formatVersion: 1 | 2;
   id: string;
   suiteId: string;
   userId: string;
@@ -179,6 +199,12 @@ export function parseInput(
   source: string,
   format: ExchangeFormat,
 ): InputDocument {
+  return inputDocumentSchema.parse(parseExchangeValue(source, format));
+}
+export function parseExchangeValue(
+  source: string,
+  format: ExchangeFormat,
+): unknown {
   if (new TextEncoder().encode(source).byteLength > 1024 * 1024)
     throw new Error('Input must be 1 MiB or smaller.');
   // The YAML JSON schema also catches duplicate JSON keys, unlike JSON.parse.
@@ -211,7 +237,7 @@ export function parseInput(
   }
   const value: unknown = doc.toJS({ maxAliasCount: 0 });
   assertJson(value);
-  return inputDocumentSchema.parse(value);
+  return value;
 }
 function assertJson(value: unknown, depth = 0): void {
   if (depth > 64) throw new Error('Input nesting is too deep.');
@@ -363,7 +389,7 @@ const caseExecutionSchema = z
   .strict();
 export const suiteExecutionSchema = z
   .object({
-    formatVersion: z.literal(1),
+    formatVersion: z.union([z.literal(1), z.literal(2)]),
     id: z.string(),
     suiteId: z.string(),
     userId: z.string(),

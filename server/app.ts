@@ -1,3 +1,11 @@
+import { FlowService, type InferFlow } from './flows.js';
+import {
+  flowDocumentSchema,
+  flowSchema,
+  flowSuiteSchema,
+  expectationSchema,
+} from '../shared/flows.js';
+import { settingsSchema } from '../shared/evaluation.js';
 import { createHash } from 'node:crypto';
 import {
   ExchangeService,
@@ -5,7 +13,11 @@ import {
   gradingSelectionSchema,
   type ExecuteQuery,
 } from './exchange.js';
-import { exchangeFormatSchema, serializeDocument } from '../shared/exchange.js';
+import {
+  exchangeFormatSchema,
+  serializeDocument,
+  parseExchangeValue,
+} from '../shared/exchange.js';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { validateImage } from './images.js';
@@ -250,15 +262,8 @@ export function createApp(
           },
     };
   }
-  const execute: ExecuteQuery = async (
-    query,
-    title,
-    providerId,
-    userId,
-    blind,
-    link,
-  ) => {
-    context(providerId, query.model);
+  const infer: InferFlow = async (query, providerId) => {
+    const selectedContext = context(providerId, query.model);
     const selected = providers.get(providerId)!;
     const connection = connections.find(
       (p) => p.connection.id === providerId,
@@ -272,7 +277,7 @@ export function createApp(
       throw new ProviderError(
         422,
         'images_unsupported',
-        'This connection does not support images. Select an image-capable Strands or direct llama.cpp connection.',
+        'Select an image-capable Strands or direct llama.cpp connection.',
       );
     const images = store.resolveImages(imageIds);
     const output = await selected.evaluate({
@@ -280,38 +285,40 @@ export function createApp(
       ...(images.length ? { images } : {}),
     });
     const { rawResponse, executionInfo, ...response } = output;
-    const run = store.saveRun(
+    return {
+      response,
+      rawResponse,
+      elapsedMs: Math.round(performance.now() - start),
+      metadata: {
+        ...selectedContext.metadata,
+        resolvedModel: response.model,
+        ...executionInfo,
+      },
+    };
+  };
+  const execute: ExecuteQuery = async (
+    query,
+    title,
+    providerId,
+    userId,
+    blind,
+    link,
+  ) => {
+    const output = await infer(query, providerId);
+    return store.saveRun(
       {
         title,
         query,
-        response,
-        elapsedMs: Math.round(performance.now() - start),
+        response: output.response,
+        elapsedMs: output.elapsedMs,
         createdAt: new Date().toISOString(),
       },
       userId,
       blind,
-      {
-        ...(connection
-          ? {
-              formatVersion: 2 as const,
-              label: connection.label,
-              adapter: connection.adapter,
-              questionInteraction: connection.question_interaction,
-              provider: providerId,
-            }
-          : {
-              formatVersion: 1 as const,
-              provider: 'jev' as const,
-            }),
-        requestedModel: query.model,
-        resolvedModel: response.model,
-        artifactRevision: null,
-        ...executionInfo,
-      },
-      rawResponse,
+      output.metadata,
+      output.rawResponse,
       link,
     );
-    return run;
   };
   app.post('/api/runs', async (c) => {
     const userId = actor(c);
@@ -376,6 +383,40 @@ export function createApp(
       .strict()
       .parse(await c.req.json());
     return c.json(exchange.exportInput(c.req.param('id'), actor(c), v.format));
+  });
+  app.post('/api/suites/:id/images', async (c) => {
+    const user = actor(c),
+      originalId = c.req.param('id'),
+      suite = exchange.suite(originalId);
+    const v = z
+      .object({
+        version: z.number().int().positive(),
+        images: z.record(z.string(), requestSchema.shape.imageIds.unwrap()),
+      })
+      .strict()
+      .parse(await c.req.json());
+    if (v.version <= suite.version)
+      throw new StoreError(400, 'Use a higher Suite version.');
+    if (
+      Object.keys(v.images).some(
+        (id) => !suite.cases.some((item) => item.id === id),
+      )
+    )
+      throw new StoreError(400, 'Unknown case ID.');
+    for (const ids of Object.values(v.images)) store.resolveImages(ids);
+    const document = {
+      ...suite,
+      schemaVersion: 2 as const,
+      version: v.version,
+      cases: suite.cases.map((item) => ({
+        ...item,
+        imageIds: v.images[item.id] ?? item.imageIds,
+      })),
+    };
+    const saved = store.saveDocuments([document], user, false)[0];
+    if (store.expectedSeenAt(originalId, user))
+      store.noteExpectedSeen(saved.id, user);
+    return c.json(saved, 201);
   });
   app.get('/api/suites/:id', (c) => {
     const userId = actor(c),
@@ -462,6 +503,231 @@ export function createApp(
       format: v.format,
       filename: `experiment-results-${result.execution.id}.${v.format}`,
     });
+  });
+  const flows = new FlowService(store);
+  app.get('/api/flow-documents', (c) => {
+    actor(c);
+    return c.json(store.listFlowDocuments());
+  });
+  app.post('/api/flow-documents', async (c) =>
+    c.json(flows.save(await c.req.json(), actor(c)), 201),
+  );
+  app.post('/api/flow-documents/import', async (c) => {
+    const v = z
+      .object({ source: z.string(), format: exchangeFormatSchema })
+      .strict()
+      .parse(await c.req.json());
+    return c.json(
+      flows.save(parseExchangeValue(v.source, v.format), actor(c)),
+      201,
+    );
+  });
+  app.post('/api/flow-documents/validate', async (c) => {
+    actor(c);
+    flows.validate(flowDocumentSchema.parse(await c.req.json()));
+    return c.json({ valid: true });
+  });
+  app.get('/api/flow-documents/:id', (c) => {
+    const user = actor(c),
+      document = store.getFlowDocument(c.req.param('id'));
+    if (document.kind === 'flow-suite')
+      return c.json({
+        ...document,
+        cases: document.cases.map(({ expected: _expected, ...item }) => item),
+        expectedSeenAt: store.expectedSeenAt(c.req.param('id'), user),
+      });
+    return c.json(document);
+  });
+  app.post('/api/flow-documents/:id/export', async (c) => {
+    const user = actor(c),
+      document = store.getFlowDocument(c.req.param('id'));
+    const { format } = z
+      .object({ format: exchangeFormatSchema })
+      .strict()
+      .parse(await c.req.json());
+    if (
+      document.kind === 'flow-suite' &&
+      document.cases.some((item) => item.expected)
+    )
+      store.noteExpectedSeen(c.req.param('id'), user);
+    return c.json({
+      text: serializeDocument(document, format),
+      filename: `${document.kind}-${document.name}-v${document.version}.${format}`,
+      format,
+    });
+  });
+  app.get('/api/flow-definitions', (c) => {
+    actor(c);
+    return c.json(
+      store
+        .listDocuments()
+        .filter((d) => d.kind === 'decision-definition')
+        .map((d) => ({ id: d.id, ...store.getDocument(d.id) })),
+    );
+  });
+  const flowRunInput = z
+    .object({
+      ...suiteRunInput.shape,
+      state: requestSchema.shape.state,
+      imageIds: requestSchema.shape.imageIds,
+    })
+    .strict();
+  function launchFlow(id: string) {
+    void flows
+      .run(id, infer)
+      .catch(() => {
+        /* startup marks persisted executions interrupted */
+      })
+      .finally(() => {
+        running = false;
+      });
+  }
+  app.post('/api/flows/:id/execute', async (c) => {
+    const user = actor(c),
+      v = flowRunInput.parse(await c.req.json()),
+      selected = context(v.provider, v.model);
+    if (running) throw new StoreError(409, 'Another inference is running.');
+    const e = flows.create(
+      c.req.param('id'),
+      { state: v.state, imageIds: v.imageIds },
+      v.provider,
+      v.model,
+      user,
+      selected,
+    );
+    running = true;
+    launchFlow(e.id);
+    return c.json(flows.summary(e, user), 202);
+  });
+  app.get('/api/flow-executions', (c) => {
+    const user = actor(c);
+    return c.json(
+      store.listFlowExecutions().map((e) => flows.summary(e, user)),
+    );
+  });
+  app.get('/api/flow-executions/:id', (c) => {
+    const user = actor(c),
+      e = store.getFlowExecution(c.req.param('id'));
+    if (!store.flowRevealed(e.id, user)) return c.json(flows.summary(e, user));
+    return c.json(e);
+  });
+  app.get('/api/flow-executions/:id/labeling', (c) =>
+    c.json(flows.labeling(c.req.param('id'), actor(c))),
+  );
+  app.post('/api/flow-executions/:id/reveal', (c) => {
+    const user = actor(c),
+      id = c.req.param('id');
+    store.revealFlow(id, user);
+    return c.json(store.getFlowExecution(id));
+  });
+  const flowLabelsInput = z
+    .object({
+      labels: expectationSchema,
+      settings: settingsSchema
+        .strict()
+        .default({ threshold: 0.5, tolerance: 0.5 }),
+    })
+    .strict();
+  app.post('/api/flow-executions/:id/finalize', async (c) => {
+    const v = flowLabelsInput.parse(await c.req.json());
+    return c.json(
+      flows.finalize(c.req.param('id'), actor(c), v.labels, v.settings),
+      201,
+    );
+  });
+  app.post('/api/flow-executions/:id/assignments', async (c) => {
+    actor(c);
+    const v = z
+      .object({ userId: z.string() })
+      .strict()
+      .parse(await c.req.json());
+    store.assignFlow(c.req.param('id'), v.userId);
+    return c.json({ assigned: true });
+  });
+  app.get('/api/flow-executions/:id/comparison', (c) => {
+    const user = actor(c),
+      id = c.req.param('id'),
+      assigned = store.flowAssignments(id);
+    if (
+      !assigned.includes(user) ||
+      assigned.some(
+        (u) => !store.flowRevisions(id, u).some((r) => r.kind === 'individual'),
+      )
+    )
+      throw new StoreError(409, 'Wait for assigned evaluators to finalize.');
+    return c.json({ revisions: store.flowRevisions(id) });
+  });
+  app.post('/api/flow-executions/:id/adopt', async (c) => {
+    const v = flowLabelsInput
+      .extend({ sourceRevisionIds: z.array(z.string().uuid()) })
+      .parse(await c.req.json());
+    return c.json(
+      flows.finalize(
+        c.req.param('id'),
+        actor(c),
+        v.labels,
+        v.settings,
+        'reference',
+        v.sourceRevisionIds,
+      ),
+      201,
+    );
+  });
+  app.post('/api/flow-suites/:id/execute', async (c) => {
+    const user = actor(c),
+      v = suiteRunInput.parse(await c.req.json()),
+      selected = context(v.provider, v.model);
+    if (running) throw new StoreError(409, 'Another inference is running.');
+    const suiteId = c.req.param('id'),
+      suite = flowSuiteSchema.parse(store.getFlowDocument(suiteId));
+    const flow = store
+      .listFlowDocuments()
+      .find(
+        (d) =>
+          d.kind === 'decision-flow' &&
+          d.name === suite.flow.name &&
+          d.version === suite.flow.version,
+      );
+    if (!flow) throw new StoreError(409, 'Flow reference was not found.');
+    for (const item of suite.cases) store.resolveImages(item.imageIds);
+    const executions = suite.cases.map((item) =>
+      flows.create(
+        flow.id,
+        { state: item.state, imageIds: item.imageIds },
+        v.provider,
+        v.model,
+        user,
+        selected,
+        suiteId,
+        item.id,
+      ),
+    );
+    running = true;
+    void (async () => {
+      for (const e of executions) await flows.run(e.id, infer);
+    })()
+      .catch(() => {
+        /* persisted state is recovered on restart */
+      })
+      .finally(() => {
+        running = false;
+      });
+    return c.json(
+      { executions: executions.map((e) => flows.summary(e, user)) },
+      202,
+    );
+  });
+  app.post('/api/flow-suites/:id/results', async (c) => {
+    const v = z
+      .object({
+        executionIds: z.array(z.string().uuid()).min(1).max(100),
+        source: z.enum(['expected', 'individual', 'reference']),
+      })
+      .strict()
+      .parse(await c.req.json());
+    return c.json(
+      flows.results(c.req.param('id'), v.executionIds, actor(c), v.source),
+    );
   });
   return app;
 }

@@ -898,3 +898,172 @@ footer .footer-link {
   display: flex;
   gap: 4px;
 }
+/* Decision-flow cards and connections stay editable without a graph runtime. */
+.flows-workspace .panel {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid #d6dfe3;
+  border-radius: 12px;
+}
+.flow-document-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin: 18px 0;
+}
+.flow-document-bar label {
+  flex: 1;
+  min-width: 130px;
+}
+.flows-workspace label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+.flows-workspace textarea {
+  width: 100%;
+  min-height: 90px;
+}
+.flows-workspace pre {
+  overflow: auto;
+  max-height: 440px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.flow-design {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 350px);
+  gap: 18px;
+  margin: 20px 0;
+}
+.flow-board-scroll {
+  overflow: auto;
+  max-height: 650px;
+  border: 1px solid #ccd8dd;
+  border-radius: 12px;
+  background: #f5f8f9;
+}
+.flow-board {
+  position: relative;
+  background-image: radial-gradient(#cbd6dd 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.flow-wires {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.flow-edge {
+  color: #71868f;
+}
+.flow-edge path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.flow-edge text {
+  fill: currentColor;
+  font-size: 12px;
+}
+.flow-edge.traversed {
+  color: #078366;
+}
+.flow-edge.traversed path {
+  stroke-width: 4;
+}
+.flow-card {
+  position: absolute;
+  width: 240px;
+  height: 135px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 2px solid #bdccd3;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 4px 12px #182f3d12;
+}
+.flow-card.input {
+  border-color: #7896ca;
+}
+.flow-card.result {
+  border-color: #83ab96;
+}
+.flow-card.selected {
+  outline: 3px solid #1f5c91;
+  outline-offset: 2px;
+}
+.flow-card.traversed {
+  background: #e7f8f0;
+  border-color: #078366;
+}
+.flow-card-handle {
+  cursor: grab;
+  touch-action: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #526d79;
+}
+.flow-card-title {
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  color: #213746 !important;
+  text-align: left;
+  font-weight: 650;
+}
+.flow-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-port {
+  font-size: 11px;
+  padding: 2px 5px !important;
+  align-self: end;
+}
+.flow-inspector {
+  border: 1px solid #d6dfe3;
+  border-radius: 12px;
+  padding: 16px;
+  max-height: 650px;
+  overflow: auto;
+}
+.flows-workspace fieldset {
+  border: 1px solid #cbd7dd;
+  border-radius: 8px;
+  margin: 14px 0;
+  padding: 12px;
+}
+.flows-workspace fieldset button {
+  margin: 3px;
+}
+.flow-condition {
+  border-bottom: 1px dashed #cbd7dd;
+  padding: 8px 0;
+}
+.flow-validation {
+  color: #9c4031;
+}
+.flow-path {
+  padding: 12px;
+  background: #e7f8f0;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.flows-workspace .flow-execution-select {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+}
+@media (max-width: 1100px) {
+  .flow-design {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .flow-inspector {
+    max-height: none;
+  }
+}

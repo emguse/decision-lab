@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { test, expect } from '@playwright/test';
 import { mockApi } from './mock';
 import {
@@ -37,10 +38,10 @@ test('imports YAML/JSON, runs a Suite blind, grades independently, and exports a
   await page.goto('/');
   await page.getByRole('button', { name: 'Suites', exact: true }).click();
   await expect(page.getByLabel('Suite image support')).toContainText(
-    'Image inputs are not yet supported in Experiment suites.',
+    'Image cases use schemaVersion 2',
   );
   await expect(page.getByLabel('Suite image support')).toContainText(
-    'Use Playground',
+    'Attach images to saved cases',
   );
   await expect(page.getByText('No file selected', { exact: true })).toHaveCount(
     2,
@@ -268,4 +269,74 @@ test('returns to the selected older execution and saves labels before opening he
   await expect(
     page.getByRole('button', { name: 'Back to suite execution' }),
   ).toHaveCount(0);
+});
+
+test('retains ordered originals in an unexecuted image Suite and runs them through the local connection', async ({
+  page,
+}) => {
+  const model = 'StrandsAgents/strands-decider-2B-qwen3.5-v1-2610';
+  const api = await mockApi(page, {
+    local: true,
+    vision: true,
+    localModel: model,
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Suites', exact: true }).click();
+  await page
+    .getByLabel('Input text 1')
+    .fill(serializeDocument(definition, 'json'));
+  await page.getByLabel('Input format 1').selectOption('json');
+  await page
+    .getByLabel('Input text 2')
+    .fill(serializeDocument({ ...suite, cases: [suite.cases[0]] }, 'json'));
+  await page.getByLabel('Input format 2').selectOption('json');
+  await page.getByRole('button', { name: 'Validate and preview' }).click();
+  await page.getByRole('button', { name: 'Save input', exact: true }).click();
+  await page.getByText('Case images', { exact: true }).click();
+  const files = await Promise.all(
+    [2, 3].map(async (width) => ({
+      name: `original-${width}.png`,
+      mimeType: 'image/png',
+      buffer: await sharp({
+        create: { width, height: 2, channels: 3, background: '#f00' },
+      })
+        .png()
+        .toBuffer(),
+    })),
+  );
+  await page.getByLabel('Add images').setInputFiles(files);
+  await expect(page.getByAltText('Input image 2')).toBeVisible();
+  await page.getByLabel('Move image 2 left').click();
+  await page
+    .getByRole('button', {
+      name: 'Save case images as new version',
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole('heading', { name: 'support-evaluation v2 · 1 cases' }),
+  ).toBeVisible();
+  const saved = api.store
+    .listDocuments()
+    .find((d) => d.kind === 'experiment-suite' && d.version === 2)!;
+  const document = api.store.getDocument(saved.id);
+  if (document.kind !== 'experiment-suite') throw new Error('Expected Suite');
+  expect(document.schemaVersion).toBe(2);
+  expect(document.cases[0].imageIds).toHaveLength(2);
+  expect(api.store.getImage(document.cases[0].imageIds![0]).width).toBe(3);
+  expect(api.calls()).toBe(0);
+  await page
+    .getByRole('combobox', { name: 'Suite connection', exact: true })
+    .selectOption('strands-local');
+  await page.getByRole('button', { name: 'Run suite sequentially' }).click();
+  await expect(
+    page.getByText('Execution status: completed · Succeeded 1 / 1'),
+  ).toBeVisible();
+  const run = api.store.getRun(
+    api.store.listSummaries(api.store.actor())[0].id,
+  );
+  expect(run.query.imageIds).toEqual(document.cases[0].imageIds);
+  await page.getByRole('button', { name: 'Open blind evaluation' }).click();
+  await expect(page.getByAltText('Input image 2')).toBeVisible();
+  await expect(page.getByText('0.9000', { exact: true })).toHaveCount(0);
 });
