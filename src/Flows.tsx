@@ -361,6 +361,7 @@ export function FlowsWorkspace({
     [labelSource, setLabelSource] = useState<
       'expected' | 'individual' | 'reference'
     >('expected');
+  const [caseEditorKeys, setCaseEditorKeys] = useState<string[]>([]);
   const lock = useRef(false),
     generation = useRef(0);
   const drag = useRef<{
@@ -451,6 +452,11 @@ export function FlowsWorkspace({
     return requestSchema.shape.state.parse(
       inputMode === 'json' ? JSON.parse(state) : state,
     );
+  }
+  function openSuite(document: FlowSuite) {
+    setSuite(document);
+    setCaseEditorKeys(document.cases.map(() => crypto.randomUUID()));
+    setCaseBlocked({});
   }
   useEffect(() => {
     void refresh().catch((e) => setError(e.message));
@@ -1587,7 +1593,7 @@ export function FlowsWorkspace({
                 const d = await request<FlowSuite>(
                   `flow-documents/${selectedSuiteId}`,
                 );
-                setSuite(d);
+                openSuite(d);
                 setSuiteId(selectedSuiteId);
                 setSuiteExecutionIds([]);
                 setSuiteResult(null);
@@ -1607,7 +1613,7 @@ export function FlowsWorkspace({
         <button
           disabled={busy || !flowId}
           onClick={() => {
-            setSuite({
+            openSuite({
               ...exampleFlowSuite,
               name: `${flow.name} evaluation`,
               flow: { name: flow.name, version: flow.version },
@@ -1623,7 +1629,7 @@ export function FlowsWorkspace({
         <button
           disabled={busy}
           onClick={() => {
-            setSuite(exampleFlowSuite);
+            openSuite(exampleFlowSuite);
             setSuiteId('');
             setSuiteExecutionIds([]);
             setSuiteResult(null);
@@ -1675,7 +1681,7 @@ export function FlowsWorkspace({
                         { format: 'json' },
                       );
                       const original = JSON.parse(data.text) as FlowSuite;
-                      setSuite({ ...original, version: original.version + 1 });
+                      openSuite({ ...original, version: original.version + 1 });
                       setSuiteId('');
                       setSuiteExecutionIds([]);
                       setSuiteResult(null);
@@ -1704,11 +1710,15 @@ export function FlowsWorkspace({
                 setSuiteId('');
               };
               return (
-                <fieldset key={index} disabled={Boolean(suiteId) || busy}>
+                <fieldset
+                  key={caseEditorKeys[index]}
+                  disabled={Boolean(suiteId) || busy}
+                >
                   <legend>Case {index + 1}</legend>
                   <label>
                     Case ID
                     <input
+                      disabled={caseBlocked[item.id]}
                       value={item.id}
                       onChange={(e) => update({ id: e.target.value })}
                     />
@@ -1727,7 +1737,7 @@ export function FlowsWorkspace({
                   <ImageAttachments
                     ids={item.imageIds}
                     userId={user.id}
-                    disabled={busy}
+                    disabled={Boolean(suiteId) || busy}
                     onChange={(imageIds) => update({ imageIds })}
                     onBlocked={(value) =>
                       setCaseBlocked((prev) =>
@@ -1812,6 +1822,9 @@ export function FlowsWorkspace({
                   </label>
                   <button
                     onClick={() => {
+                      setCaseEditorKeys((keys) =>
+                        keys.filter((_, i) => i !== index),
+                      );
                       setSuite({
                         ...suite,
                         cases: suite.cases.filter((_, i) => i !== index),
@@ -1831,8 +1844,14 @@ export function FlowsWorkspace({
               onClick={() =>
                 void action(async () => {
                   const caseState = currentInputState();
-                  const id = `case_${suite.cases.length + 1}`;
+                  const existingIds = new Set(
+                    suite.cases.map((item) => item.id),
+                  );
+                  let caseNumber = suite.cases.length + 1;
+                  while (existingIds.has(`case_${caseNumber}`)) caseNumber++;
+                  const id = `case_${caseNumber}`;
                   const evidenceId = crypto.randomUUID();
+                  setCaseEditorKeys((keys) => [...keys, evidenceId]);
                   setSuite({
                     ...suite,
                     cases: [
@@ -2034,7 +2053,7 @@ export function FlowsWorkspace({
               await refresh();
               if (d.kind === 'decision-flow') await loadFlow(d.id);
               else {
-                setSuite(await request(`flow-documents/${d.id}`));
+                openSuite(await request(`flow-documents/${d.id}`));
                 setSuiteId(d.id);
               }
               setSource('');
