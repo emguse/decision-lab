@@ -15,6 +15,8 @@ export const modelIdentitySchema = z.object({
   source: z.literal('llamacpp_props'),
 });
 export type ModelIdentity = z.infer<typeof modelIdentitySchema>;
+export const imageBindingSchema = z.literal('state.images/v1');
+export type ImageBinding = z.infer<typeof imageBindingSchema>;
 export interface ProviderHealth {
   status: 'unconfigured' | 'unreachable' | 'ready' | 'mismatch' | 'configured';
   model?: string;
@@ -34,6 +36,7 @@ const metadata = {
   artifactRevision: z.string().nullable().default(null),
   modelArtifact: z.string().optional(),
   modelIdentity: modelIdentitySchema.optional(),
+  imageBinding: imageBindingSchema.optional(),
 };
 export const executionMetadataSchema = z.discriminatedUnion('formatVersion', [
   z.object({
@@ -60,6 +63,8 @@ export interface ProviderConfig {
   guidance?: string;
   adapter?: 'llamacpp' | 'systemone' | 'strands';
   questionInteraction?: 'independent' | 'joint' | 'unknown';
+  images?: boolean;
+  box?: boolean;
 }
 export interface AppConfig {
   configured: boolean;

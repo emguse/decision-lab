@@ -398,7 +398,14 @@ it('preserves structured instructions and criteria, including native structured 
 it('rechecks image capability before each request and rejects router metadata, missing projectors and changed models', async () => {
   const imageInput = {
     ...query,
-    images: [{ mime: 'image/png', data: new Uint8Array([1, 2, 3]) }],
+    images: [
+      {
+        mime: 'image/png',
+        width: 2,
+        height: 2,
+        data: new Uint8Array([1, 2, 3]),
+      },
+    ],
   };
   const capable = {
     id: 'clef',

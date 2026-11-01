@@ -1,10 +1,10 @@
 # Decision Lab
 
-A local lab for typed decisions with Jev, Strands Decider, Clef, and configured System One services. Edit Noul, Choice, and Score questions, run individual inputs or experiment suites, label saved answers, and exchange YAML/JSON files with an LLM. Data is stored locally in SQLite. Playground also accepts image attachments for separately running Strands vision and direct llama.cpp image-capable servers; saved inputs and human evaluation retain the original images.
+A local lab for typed decisions with Jev, Strands Decider, Clef, and configured System One services. Edit Noul, Choice, and Score questions, run individual inputs or experiment suites, label saved answers, and exchange YAML/JSON files with an LLM. Data is stored locally in SQLite. Playground also accepts image attachments for separately running Strands vision and direct llama.cpp image-capable servers; saved inputs and human evaluation retain the original images. Experimental Jev image input and Box questions are off by default; see [Operations](docs/operations.md#experimental-jev-images-and-box).
 
 ## Quick start
 
-Image inputs are available in Playground, decision flows and schema-2 Suites through compatible local connections. Saved Suites retain original images before execution; exports reference the local database. Portable image bundles are deferred.
+Image inputs are available in Playground, decision flows and schema-2 Suites through compatible local connections, or Jev after opting in. Saved Suites retain original images before execution; exports reference the local database. Portable image bundles are deferred.
 
 Requires Node.js 22.16+ and npm.
 

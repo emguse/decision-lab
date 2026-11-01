@@ -8,7 +8,13 @@ import { Store, SCHEMA_VERSION } from '../server/store';
 import { ExchangeService } from '../server/exchange';
 import { createApp } from '../server/app';
 import { ProviderError } from '../server/provider';
-import { initialQuery, validateResponse } from '../shared/schema';
+import sharp from 'sharp';
+import { validateImage } from '../server/images';
+import {
+  initialQuery,
+  validateResponse,
+  type DecisionInput,
+} from '../shared/schema';
 import {
   parseInput,
   serializeDocument,
@@ -905,4 +911,108 @@ it('rejects identifier normalization rather than silently changing option IDs or
       'yaml',
     ),
   ).toThrow();
+});
+describe('Box in Suites', () => {
+  const boxDefinition = definitionSchema.parse({
+    ...definition,
+    name: 'boxes',
+    questions: {
+      present: { type: 'noul', instructions: 'Is a mug present?' },
+      mug: { type: 'box', instructions: 'the mug in `images[0]`' },
+    },
+  });
+  const boxSuite = (over: { imageIds?: string[]; expected?: object } = {}) =>
+    suiteSchema.parse({
+      kind: 'experiment-suite',
+      schemaVersion: over.imageIds ? 2 : 1,
+      name: 'box-suite',
+      version: 1,
+      definition: { name: 'boxes', version: 1 },
+      cases: [{ id: 'q1', state: 'desk', ...over }],
+    });
+  const execute = async (ctx: ReturnType<typeof setup>, suiteDoc: Suite) => {
+    const res = await ctx.req(
+      'exchange/import',
+      inputs([boxDefinition, suiteDoc]),
+    );
+    expect(res.status).toBe(201);
+    const id = (await res.json()).find(
+      (d: { kind: string }) => d.kind === 'experiment-suite',
+    ).id;
+    return ctx.req(`suites/${id}/execute`, {
+      provider: 'jev',
+      model: 'jev-latest',
+    });
+  };
+  it('round-trips a Box question through the exchange format', () => {
+    const parsed = parseInput(serializeDocument(boxDefinition, 'yaml'), 'yaml');
+    expect(parsed).toEqual(boxDefinition);
+  });
+  it('refuses to start without Box support, before any inference', async () => {
+    const ctx = setup();
+    const res = await execute(ctx, boxSuite());
+    expect(res.status).toBe(400);
+    expect(ctx.provider.evaluate).not.toHaveBeenCalled();
+  });
+  it('rejects an expected label on a Box question at import', async () => {
+    const ctx = setup();
+    const res = await ctx.req(
+      'exchange/import',
+      inputs([boxDefinition, boxSuite({ expected: { mug: 'correct' } })]),
+    );
+    expect(res.status).toBe(400);
+  });
+  it('runs a Box case and exports results without counting Box as unlabeled', async () => {
+    const answers = {
+      present: { type: 'noul', noul: 0.9 },
+      mug: {
+        type: 'box',
+        box: { top: 0.1, bottom: 0.5, left: 0.1, right: 0.5 },
+        confidence: 0.8,
+      },
+    };
+    const provider = {
+      capabilities: { images: true, box: true },
+      evaluate: vi.fn(async (query: DecisionInput) =>
+        validateResponse({ model: 'jev-1.14.0', answers, usage: {} }, query),
+      ),
+    };
+    const ctx = setup(provider as unknown as Parameters<typeof setup>[0]);
+    const bytes = await sharp({
+      create: { width: 400, height: 300, channels: 3, background: '#f00' },
+    })
+      .png()
+      .toBuffer();
+    const image = ctx.store.saveImage(
+      bytes,
+      await validateImage(bytes),
+      ctx.actor,
+    );
+    const res = await execute(
+      ctx,
+      boxSuite({ imageIds: [image.id], expected: { present: true } }),
+    );
+    expect(res.status).toBe(202);
+    const progress = await waitFor(ctx, (await res.json()).id);
+    expect(progress.status).toBe('completed');
+    for (const item of progress.cases) ctx.store.reveal(item.runId!, ctx.actor);
+    const results = await ctx.req(`suite-executions/${progress.id}/results`, {
+      source: 'expected',
+    });
+    expect(results.status).toBe(200);
+    const { summary } = await results.json();
+    expect(summary.missingLabels).toBe(0);
+    expect(summary.noul.correct).toBe(1);
+  });
+  it('refuses to start when a case lacks exactly one image', async () => {
+    const provider = {
+      capabilities: { images: true, box: true },
+      evaluate: vi.fn(async () => validateResponse(fixture, initialQuery)),
+    };
+    const ctx = setup(provider);
+    const res = await execute(ctx, boxSuite());
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('exactly one');
+    expect(provider.evaluate).not.toHaveBeenCalled();
+  });
 });

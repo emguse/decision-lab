@@ -8,6 +8,7 @@ import {
   type Run,
 } from './schema.js';
 import {
+  labelableQuestionCount,
   labelsSchema,
   settingsSchema,
   validateLabels,
@@ -53,6 +54,7 @@ const strictQuestion = z.discriminatedUnion('type', [
       ),
   }),
   questionSchema.options[2].strict(),
+  questionSchema.options[3],
 ]);
 export const definitionSchema = z
   .object({
@@ -297,7 +299,7 @@ export function gradePartial(
     labels,
     settings,
     rows,
-    missingLabels: Object.keys(run.query.questions).length - rows.length,
+    missingLabels: labelableQuestionCount(run.query.questions) - rows.length,
   };
 }
 export function aggregateGrades(

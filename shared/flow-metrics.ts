@@ -89,8 +89,12 @@ export function flowMetrics(
         );
         return [...used]
           .map((key) => s.response.answers[key])
-          .map((a) =>
-            a.type === 'noul' ? Math.abs(2 * a.noul - 1) : a.confidence,
+          .flatMap((a) =>
+            a.type === 'noul'
+              ? [Math.abs(2 * a.noul - 1)]
+              : a.type === 'box'
+                ? []
+                : [a.confidence],
           );
       }),
     );

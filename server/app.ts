@@ -5,7 +5,7 @@ import {
   flowSuiteSchema,
   expectationSchema,
 } from '../shared/flows.js';
-import { settingsSchema } from '../shared/evaluation.js';
+import { boxReviewInputSchema, settingsSchema } from '../shared/evaluation.js';
 import { createHash } from 'node:crypto';
 import {
   ExchangeService,
@@ -22,11 +22,16 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { validateImage } from './images.js';
 import { z } from 'zod';
-import { requestSchema } from '../shared/schema.js';
+import {
+  boxImageProblem,
+  hasBoxQuestion,
+  requestSchema,
+} from '../shared/schema.js';
 import {
   ProviderError,
   type DecisionProvider,
   type ConfiguredDecisionProvider,
+  boxUnsupported,
 } from './provider.js';
 import { SCHEMA_VERSION, StoreError, type Store } from './store.js';
 import { providerIdSchema } from '../shared/providers.js';
@@ -74,7 +79,7 @@ export function createApp(
     if (error instanceof ProviderError)
       return c.json(
         { error: error.message, code: error.code },
-        error.status as 422 | 429 | 502 | 503 | 504,
+        error.status as 413 | 422 | 429 | 502 | 503 | 504,
       );
     if (error instanceof z.ZodError || error instanceof SyntaxError)
       return c.json({ error: 'Check the input format.' }, 400);
@@ -92,6 +97,8 @@ export function createApp(
           modelEditable: true,
           healthCheck: false,
           questionInteraction: 'independent',
+          images: provider.capabilities?.images === true,
+          box: provider.capabilities?.box === true,
         },
         ...Object.fromEntries(
           connections.map((p) => [p.connection.id, p.config]),
@@ -171,6 +178,16 @@ export function createApp(
   app.get('/api/runs/:id/evaluation', (c) =>
     c.json(store.evaluation(c.req.param('id'), actor(c))),
   );
+  app.post('/api/runs/:id/box-reviews', async (c) =>
+    c.json(
+      store.saveBoxReview(
+        c.req.param('id'),
+        actor(c),
+        boxReviewInputSchema.parse(await c.req.json()),
+      ),
+      201,
+    ),
+  );
   app.post('/api/runs/:id/assignments', async (c) => {
     actor(c);
     const v = z.object({ userId: z.string() }).parse(await c.req.json());
@@ -234,6 +251,7 @@ export function createApp(
         'Use the configured model ID.',
       );
     return {
+      supportsBox: selected.capabilities?.box === true,
       fingerprint: createHash('sha256')
         .update(
           JSON.stringify(
@@ -272,13 +290,21 @@ export function createApp(
     const { imageIds, ...textInput } = query;
     if (
       imageIds?.length &&
-      !['strands', 'llamacpp'].includes(connection?.adapter ?? '')
+      !['strands', 'llamacpp'].includes(connection?.adapter ?? '') &&
+      !(providerId === 'jev' && provider.capabilities?.images)
     )
       throw new ProviderError(
         422,
         'images_unsupported',
-        'Select an image-capable Strands or direct llama.cpp connection.',
+        providerId === 'jev'
+          ? 'Jev image input is experimental. Set TYPESAFE_EXPERIMENTAL_IMAGES=true on the server, or select an image-capable Strands or direct llama.cpp connection.'
+          : 'Select an image-capable Strands or direct llama.cpp connection.',
       );
+    if (hasBoxQuestion(query.questions)) {
+      if (selected.capabilities?.box !== true) throw boxUnsupported();
+      const problem = boxImageProblem(query.questions, imageIds?.length ?? 0);
+      if (problem) throw new ProviderError(422, 'box_image_count', problem);
+    }
     const images = store.resolveImages(imageIds);
     const output = await selected.evaluate({
       ...textInput,

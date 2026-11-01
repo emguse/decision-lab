@@ -3,10 +3,12 @@ import { displayUserName } from './user-name';
 import { gradePartial, aggregateGrades } from '../shared/exchange';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { api } from './api';
-import { ResultView } from './ResultView';
+import { answerBoxes, ResultView } from './ResultView';
 import {
   emptyDraft,
   grade,
+  labelableQuestionCount,
+  type BoxReview,
   type Draft,
   type Labels,
   type Labeling,
@@ -36,7 +38,11 @@ function LabelControls({
             <span className="badge">{q.type}</span>
           </div>
           <p className="instructions">{pretty(q.instructions)}</p>
-          {q.type === 'noul' ? (
+          {q.type === 'box' ? (
+            <p className="hint">
+              Judge this Box as correct or incorrect after answers are revealed.
+            </p>
+          ) : q.type === 'noul' ? (
             <>
               <p className="hint">
                 {q.criteria
@@ -87,6 +93,72 @@ function LabelControls({
         </article>
       ))}
     </>
+  );
+}
+function BoxReviews({
+  evaluation,
+  busy,
+  submit,
+}: {
+  evaluation: Evaluation;
+  busy: boolean;
+  submit: (
+    question: string,
+    verdict: BoxReview['verdict'],
+    note: string,
+  ) => void;
+}) {
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const boxes = answerBoxes(evaluation.run);
+  if (!boxes.length) return null;
+  return (
+    <div className="setup">
+      <h3>Box verdicts</h3>
+      <p className="hint">
+        Recorded after seeing the prediction, separately from blind labels.
+        Earlier verdicts are retained.
+      </p>
+      <ImageGallery ids={evaluation.run.query.imageIds} boxes={boxes} />
+      {boxes.map(({ id }) => {
+        const history = evaluation.boxReviews.filter((r) => r.question === id);
+        const latest = history.at(-1);
+        return (
+          <div key={id}>
+            <strong>{id}</strong>{' '}
+            <span role="status" aria-label={`Verdict ${id}`}>
+              {latest
+                ? `${latest.verdict}${history.length > 1 ? ` (${history.length} recorded)` : ''}`
+                : 'Not judged'}
+            </span>
+            {latest?.note && <p className="hint">{latest.note}</p>}
+            <label>
+              Note
+              <input
+                aria-label={`Verdict note ${id}`}
+                maxLength={4000}
+                value={notes[id] ?? ''}
+                onChange={(e) =>
+                  setNotes((n) => ({ ...n, [id]: e.target.value }))
+                }
+              />
+            </label>
+            {(['correct', 'incorrect'] as const).map((verdict) => (
+              <button
+                key={verdict}
+                disabled={busy}
+                aria-label={`Mark ${id} ${verdict}`}
+                onClick={() => {
+                  submit(id, verdict, notes[id] ?? '');
+                  setNotes((n) => ({ ...n, [id]: '' }));
+                }}
+              >
+                {verdict === 'correct' ? 'Correct' : 'Incorrect'}
+              </button>
+            ))}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 export function EvaluationWorkspace({
@@ -209,6 +281,7 @@ export function EvaluationWorkspace({
     selected && evaluation
       ? grade(evaluation.run, selected.labels, draft.settings)
       : null;
+  const labelCount = labelableQuestionCount(data.run.query.questions);
   const expectedGrade =
     evaluation && suiteReference && Object.keys(suiteReference.expected).length
       ? gradePartial(
@@ -222,12 +295,11 @@ export function EvaluationWorkspace({
   const expectedSummary = expectedGrade
     ? aggregateGrades(
         [{ status: 'succeeded', grading: expectedGrade }],
-        Object.keys(data.run.query.questions).length,
+        labelCount,
       )
     : null;
   const complete =
-    Object.keys(draft.labels).length ===
-    Object.keys(data.run.query.questions).length;
+    labelCount > 0 && Object.keys(draft.labels).length === labelCount;
   return (
     <>
       <header>
@@ -271,8 +343,7 @@ export function EvaluationWorkspace({
       )}
       <div className="toolbar">
         <span className="progress">
-          Labels {Object.keys(draft.labels).length} /{' '}
-          {Object.keys(data.run.query.questions).length}
+          Labels {Object.keys(draft.labels).length} / {labelCount}
         </span>
         <button
           disabled={busy}
@@ -402,6 +473,19 @@ export function EvaluationWorkspace({
           ) : (
             <>
               <h2>Evaluation results</h2>
+              <BoxReviews
+                evaluation={evaluation}
+                busy={busy}
+                submit={(question, verdict, note) =>
+                  void action(async () => {
+                    const boxReviews = await request<BoxReview[]>(
+                      `runs/${runId}/box-reviews`,
+                      { question, verdict, note },
+                    );
+                    setEvaluation((e) => e && { ...e, boxReviews });
+                  })
+                }
+              />
               {suiteReference && (
                 <div className="setup">
                   <h3>Comparison with imported expectations</h3>
@@ -445,7 +529,7 @@ export function EvaluationWorkspace({
                   </select>
                 </label>
               )}
-              {graded && (
+              {graded && graded.rows.length > 0 && (
                 <>
                   <div className="metrics">
                     <div>

@@ -1,8 +1,16 @@
 import { z } from 'zod';
 import { basename } from 'node:path';
-import { validateResponse, type DecisionInput } from '../shared/schema.js';
+import {
+  hasBoxQuestion,
+  validateResponse,
+  type DecisionInput,
+} from '../shared/schema.js';
 import type { ProviderHealth, ModelIdentity } from '../shared/providers.js';
-import { ProviderError, type ConfiguredDecisionProvider } from './provider.js';
+import {
+  boxUnsupported,
+  ProviderError,
+  type ConfiguredDecisionProvider,
+} from './provider.js';
 import type { Connection } from './connections.js';
 export class SystemOneProvider implements ConfiguredDecisionProvider {
   readonly configured: boolean;
@@ -172,6 +180,7 @@ export class SystemOneProvider implements ConfiguredDecisionProvider {
     }
   }
   async evaluate(query: DecisionInput) {
+    if (hasBoxQuestion(query.questions)) throw boxUnsupported();
     let modelArtifact: string | undefined;
     let modelIdentity: ModelIdentity | undefined;
     if (query.images?.length && this.connection.adapter !== 'llamacpp')

@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
+import type { BoundingBox } from '../shared/schema';
+
+export type ImageBox = { id: string; box: BoundingBox };
 
 function ImagePreview({
   id,
   index,
   userId,
+  boxes = [],
 }: {
   id: string;
   index: number;
   userId: string;
+  boxes?: ImageBox[];
 }) {
   const [url, setUrl] = useState('');
   const [bytes, setBytes] = useState(0);
@@ -39,14 +44,36 @@ function ImagePreview({
     };
   }, [id, userId]);
   return (
-    <div className="image-preview">
+    <div className={boxes.length ? 'image-preview boxed' : 'image-preview'}>
       {error ? (
         <p role="alert">{error}</p>
       ) : url ? (
         <>
-          <a href={url} target="_blank" rel="noreferrer">
-            <img src={url} alt={`Input image ${index + 1}`} />
-          </a>
+          {boxes.length ? (
+            <div className="box-frame">
+              {/* Jev ignores EXIF orientation, so show the pixels it received. */}
+              <img src={url} alt={`Input image ${index + 1}`} />
+              {boxes.map(({ id: question, box }) => (
+                <div
+                  key={question}
+                  className="box-overlay"
+                  data-testid={`box-${question}`}
+                  style={{
+                    top: `${box.top * 100}%`,
+                    left: `${box.left * 100}%`,
+                    width: `${(box.right - box.left) * 100}%`,
+                    height: `${(box.bottom - box.top) * 100}%`,
+                  }}
+                >
+                  <span>{question}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <a href={url} target="_blank" rel="noreferrer">
+              <img src={url} alt={`Input image ${index + 1}`} />
+            </a>
+          )}
           <small>{(bytes / 1024).toFixed(1)} KiB</small>
         </>
       ) : (
@@ -58,9 +85,11 @@ function ImagePreview({
 export function ImageGallery({
   ids = [],
   userId,
+  boxes,
 }: {
   ids?: string[];
   userId?: string;
+  boxes?: ImageBox[];
 }) {
   const actor = userId ?? localStorage.getItem('localUserId') ?? '';
   return (
@@ -71,6 +100,7 @@ export function ImageGallery({
           id={id}
           index={index}
           userId={actor}
+          boxes={boxes}
         />
       ))}
     </div>
@@ -186,6 +216,8 @@ export function ImageAttachments({
         Select, drop or paste images here. Static PNG / JPEG / WebP · 5 MiB each
         · 4096 px per side. Strands requires --vision and scales images to 448
         px; direct llama.cpp requires a compatible model and --mmproj.
+        Experimental Jev input accepts PNG / JPEG only, 280–1568 px per side and
+        at most 2,458,624 total pixels, without resizing.
       </p>
       {uploading && <p role="status">Uploading images…</p>}
       {error && (

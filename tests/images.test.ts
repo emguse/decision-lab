@@ -338,7 +338,14 @@ describe('image API and inference', () => {
       expect(c.sent).toHaveLength(0);
       const input = {
         ...initialQuery,
-        images: [{ mime: 'image/png', data: Buffer.from('image') }],
+        images: [
+          {
+            mime: 'image/png',
+            width: 2,
+            height: 2,
+            data: Buffer.from('image'),
+          },
+        ],
       };
       await expect(
         new JevProvider('unused', async () => {
@@ -360,6 +367,58 @@ describe('image API and inference', () => {
       ).rejects.toMatchObject({ code: 'images_unsupported' });
     } finally {
       c.store.close();
+    }
+  });
+  it('runs saved images through Jev only after opt-in and keeps blind projections clean', async () => {
+    const store = new Store(':memory:');
+    try {
+      const sent: { assets?: unknown; state?: unknown }[] = [];
+      const fetcher: typeof fetch = async (_url, init) => {
+        sent.push(JSON.parse(String(init?.body)));
+        return Response.json(fixture);
+      };
+      const bytes = await png(400, 300);
+      const image = store.saveImage(
+        bytes,
+        await validateImage(bytes),
+        store.actor(),
+      );
+      const query = { ...initialQuery, imageIds: [image.id] };
+      const post = (app: ReturnType<typeof createApp>, blind: boolean) =>
+        app.request('http://127.0.0.1:8787/api/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Jev image', query, blind }),
+        });
+      const off = createApp(store, new JevProvider('key', fetcher), true);
+      expect((await post(off, false)).status).toBe(422);
+      expect(sent).toHaveLength(0);
+      const on = createApp(
+        store,
+        new JevProvider('key', fetcher, 60000, { experimentalImages: true }),
+        true,
+      );
+      const config = await on.request('http://127.0.0.1:8787/api/config');
+      expect((await config.json()).providers.jev.images).toBe(true);
+      const response = await post(on, false);
+      expect(response.status).toBe(201);
+      const run = await response.json();
+      expect(run.query.imageIds).toEqual([image.id]);
+      expect(run.query.state).toBe(initialQuery.state);
+      expect(run.execution.imageBinding).toBe('state.images/v1');
+      expect(JSON.stringify(sent[0])).not.toContain(image.id);
+      expect(Object.keys(sent[0].assets as object)).toHaveLength(1);
+      const saved = store.getRun(run.id);
+      expect(saved.execution?.imageBinding).toBe('state.images/v1');
+      expect(saved.rawResponse).toEqual(fixture);
+      const blind = await post(on, true);
+      expect(blind.status).toBe(201);
+      const labeling = await blind.json();
+      expect(labeling.run).not.toHaveProperty('response');
+      expect(labeling.run).not.toHaveProperty('rawResponse');
+      expect(labeling.run.query.imageIds).toEqual([image.id]);
+    } finally {
+      store.close();
     }
   });
   it('saves an experiment without inference and rolls back records with missing images', async () => {

@@ -1,7 +1,15 @@
 import { z } from 'zod';
-import { validateResponse, type DecisionInput } from '../shared/schema.js';
+import {
+  hasBoxQuestion,
+  validateResponse,
+  type DecisionInput,
+} from '../shared/schema.js';
 import type { ProviderHealth } from '../shared/providers.js';
-import { ProviderError, type DecisionProvider } from './provider.js';
+import {
+  boxUnsupported,
+  ProviderError,
+  type DecisionProvider,
+} from './provider.js';
 export function localBaseUrl(value: string) {
   if (!/^http:\/\/(127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?\/?$/.test(value))
     throw new Error('Use an explicit loopback HTTP origin');
@@ -99,6 +107,7 @@ export class LocalDecisionProvider implements DecisionProvider {
     }
   }
   async evaluate(query: DecisionInput) {
+    if (hasBoxQuestion(query.questions)) throw boxUnsupported();
     if (query.model !== this.model)
       throw new ProviderError(
         422,

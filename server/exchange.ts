@@ -1,3 +1,5 @@
+import { boxImageProblem, hasBoxQuestion } from '../shared/schema.js';
+import { labelableQuestionCount } from '../shared/evaluation.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -38,6 +40,7 @@ export const gradingSelectionSchema = z
   })
   .strict();
 export interface ExecutionContext {
+  supportsBox?: boolean;
   fingerprint: string;
   metadata: ExecutionMetadata;
 }
@@ -178,6 +181,21 @@ export class ExchangeService {
     const definition = this.store.getDocument(id);
     if (definition.kind !== 'decision-definition')
       throw new StoreError(409, 'The decision definition is invalid.');
+    // Refuse before any paid case runs rather than failing case by case.
+    if (hasBoxQuestion(definition.questions)) {
+      if (!context.supportsBox)
+        throw new StoreError(
+          400,
+          'This connection does not support Box questions.',
+        );
+      for (const item of suite.cases) {
+        const problem = boxImageProblem(
+          definition.questions,
+          item.imageIds?.length ?? 0,
+        );
+        if (problem) throw new StoreError(400, `${item.id}: ${problem}`);
+      }
+    }
     const execution: SuiteExecution = {
       formatVersion: suite.schemaVersion === 2 ? 2 : 1,
       id: randomUUID(),
@@ -399,7 +417,7 @@ export class ExchangeService {
       results,
       summary: aggregateGrades(
         results,
-        Object.keys(definition.questions).length,
+        labelableQuestionCount(definition.questions),
       ),
     });
   }

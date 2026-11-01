@@ -126,7 +126,7 @@ settings override even when every case is ungraded. A settings override explicit
 otherwise imported labels use Suite settings and human labels use their selected
 revision settings. Human references are judgments, not objective truth.
 
-Metrics count only labeled questions on successful cases. Noul uses `P(Yes) >=
+Box questions (`type: box`, no `criteria`) run only on connections that support them and need exactly one image per case. They take no `expected` value and are not counted in metrics or missing labels; judge them in Evaluation after reveal. Metrics count only labeled questions on successful cases. Noul uses `P(Yes) >=
 threshold`; Choice compares exact option IDs; Score uses unrounded absolute error
 and `error <= tolerance`. Noul/Choice accuracy and Score MAE remain separate;
 zero denominators produce `null`. Missing labels on successes and failed/

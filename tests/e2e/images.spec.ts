@@ -161,7 +161,7 @@ test('retains attachments on unsupported connections, and supports drop and past
     page.getByRole('button', { name: 'Run decision ↗' }),
   ).toBeDisabled();
   await expect(page.locator('#run-disabled-reasons')).toContainText(
-    'does not accept image attachments',
+    'Jev image input is experimental and off',
   );
   await page
     .getByRole('region', { name: 'Image attachments' })
@@ -194,7 +194,7 @@ test('retains attachments on unsupported connections, and supports drop and past
     page.getByRole('button', { name: 'Run decision ↗' }),
   ).toBeDisabled();
   await expect(page.locator('#run-disabled-reasons')).toContainText(
-    'does not accept image attachments',
+    'Jev image input is experimental and off',
   );
 });
 test('explains router image blocking beside Run and clears the reason after switching to direct mode', async ({
@@ -374,4 +374,49 @@ test('late upload and image retrieval cannot update another profile', async ({
   await page.getByLabel('Local user').selectOption(first);
   await retrievalCompleted;
   await expect(page.getByAltText('Input image 1')).toHaveCount(0);
+});
+test('runs Box through experimental Jev, hides it while blind, then records a verdict', async ({
+  page,
+}) => {
+  const api = await mockApi(page, { jevImages: true });
+  await page.goto('/');
+  await page.getByLabel('Add images').setInputFiles(await image(400));
+  await expect(page.getByAltText('Input image 1')).toBeVisible();
+  await expect(page.getByText('Experimental: images are sent')).toBeVisible();
+  await page.getByLabel('Question type 1').selectOption('box');
+  await page.getByRole('button', { name: 'Run decision ↗' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Input and human reference labels' }),
+  ).toBeVisible();
+  await expect(page.getByAltText('Input image 1')).toBeVisible();
+  await expect(page.getByTestId('box-is_urgent')).toHaveCount(0);
+  await expect(page.getByText('Judge this Box as correct')).toBeVisible();
+  await page.getByLabel('Reference department').selectOption('billing');
+  await page.getByLabel('Reference frustration').selectOption('1');
+  await page
+    .getByRole('button', { name: 'Finalize labels and reveal answers' })
+    .click();
+  const overlay = page.getByTestId('box-is_urgent').first();
+  await expect(overlay).toBeVisible();
+  await expect(overlay).toHaveAttribute('style', /top: 25%/);
+  await page.getByLabel('Verdict note is_urgent').fill('Good fit');
+  await page.getByRole('button', { name: 'Mark is_urgent correct' }).click();
+  await expect(page.getByLabel('Verdict is_urgent')).toHaveText('correct');
+  const posted = api.bodies.filter((b) => b.path.endsWith('/box-reviews'));
+  expect(posted).toHaveLength(1);
+});
+test('blocks Box and Jev images while the experimental option is off', async ({
+  page,
+}) => {
+  const api = await mockApi(page);
+  await page.goto('/');
+  await page.getByLabel('Add images').setInputFiles(await image(400));
+  await expect(page.getByAltText('Input image 1')).toBeVisible();
+  await expect(page.locator('#run-disabled-reasons')).toContainText(
+    'Jev image input is experimental and off',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Run decision ↗' }),
+  ).toBeDisabled();
+  expect(api.calls()).toBe(0);
 });

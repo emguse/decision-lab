@@ -16,6 +16,20 @@ export const draftSchema = z.object({
 export type Labels = z.infer<typeof labelsSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type Draft = z.infer<typeof draftSchema>;
+export const boxReviewInputSchema = z
+  .object({
+    question: z.string(),
+    verdict: z.enum(['correct', 'incorrect']),
+    note: z.string().max(4000).default(''),
+  })
+  .strict();
+export type BoxReviewInput = z.infer<typeof boxReviewInputSchema>;
+export interface BoxReview extends BoxReviewInput {
+  id: string;
+  runId: string;
+  userId: string;
+  createdAt: string;
+}
 export interface LocalUser {
   id: string;
   name: string;
@@ -54,16 +68,21 @@ export interface Evaluation {
   run: Run;
   revisions: Revision[];
   exposure: RunSummary['exposure'];
+  boxReviews: BoxReview[];
 }
 export const emptyDraft = (): Draft => ({
   labels: {},
   note: '',
   settings: { threshold: 0.5, tolerance: 0.5 },
 });
+/** Box answers are judged after reveal, not labeled in advance. */
+export const labelableQuestionCount = (questions: Query['questions']) =>
+  Object.values(questions).filter((q) => q.type !== 'box').length;
 export function validateLabels(query: Query, labels: Labels, complete = false) {
   for (const [id, v] of Object.entries(labels)) {
     const q = query.questions[id];
     if (!q) throw new Error('Unknown question');
+    if (q.type === 'box') throw new Error('Box questions take no labels');
     if (q.type === 'noul' && typeof v !== 'boolean')
       throw new Error('Expected Yes/No');
     if (
@@ -82,14 +101,15 @@ export function validateLabels(query: Query, labels: Labels, complete = false) {
   }
   if (
     complete &&
-    Object.keys(labels).length !== Object.keys(query.questions).length
+    Object.keys(labels).length !== labelableQuestionCount(query.questions)
   )
     throw new Error('Label every question');
 }
 export function grade(run: Run, labels: Labels, settings: Settings) {
   validateLabels(run.query, labels, true);
-  const rows = Object.entries(run.query.questions).map(([id, q]) => {
+  const rows = Object.entries(run.query.questions).flatMap(([id, q]) => {
     const a = run.response.answers[id];
+    if (a.type === 'box' || q.type === 'box') return [];
     const expected = labels[id];
     const predicted =
       a.type === 'noul'
@@ -99,15 +119,17 @@ export function grade(run: Run, labels: Labels, settings: Settings) {
           : a.score;
     const error =
       a.type === 'score' ? Math.abs(a.score - Number(expected)) : null;
-    return {
-      id,
-      type: q.type,
-      expected,
-      predicted,
-      error,
-      pass:
-        error === null ? predicted === expected : error <= settings.tolerance,
-    };
+    return [
+      {
+        id,
+        type: q.type,
+        expected,
+        predicted,
+        error,
+        pass:
+          error === null ? predicted === expected : error <= settings.tolerance,
+      },
+    ];
   });
   const metric = (type: string) => {
     const rs = rows.filter((r) => r.type === type);

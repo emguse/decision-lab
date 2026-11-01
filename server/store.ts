@@ -29,6 +29,8 @@ import type { Run, Query } from '../shared/schema.js';
 import {
   emptyDraft,
   validateLabels,
+  type BoxReview,
+  type BoxReviewInput,
   type Draft,
   type Revision,
   type LocalUser,
@@ -43,7 +45,7 @@ export class StoreError extends Error {
     super(message);
   }
 }
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 const legacy = 'legacy-unknown';
 const migrations = [
   `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -74,6 +76,8 @@ const migrations = [
  CREATE TABLE flow_exposures(execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),seen_at TEXT NOT NULL,PRIMARY KEY(execution_id,user_id));
  CREATE TABLE flow_assignments(execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(execution_id,user_id));
  CREATE TABLE flow_revisions(id TEXT PRIMARY KEY,execution_id TEXT NOT NULL REFERENCES flow_executions(id),user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,body TEXT NOT NULL);`,
+  `CREATE TABLE box_reviews(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(id),question_id TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),verdict TEXT NOT NULL CHECK(verdict IN ('correct','incorrect')),note TEXT NOT NULL,created_at TEXT NOT NULL);
+ CREATE INDEX box_reviews_run_user ON box_reviews(run_id,user_id);`,
 ];
 export class Store {
   private db: DatabaseSync;
@@ -538,6 +542,7 @@ export class Store {
         run: this.getRun(id),
         revisions: this.revisions(id, actor),
         exposure: this.exposure(id, actor),
+        boxReviews: this.boxReviews(id, actor),
       };
     });
   }
@@ -549,7 +554,43 @@ export class Store {
       run: this.getRun(id),
       revisions: this.revisions(id, actor),
       exposure: this.exposure(id, actor),
+      boxReviews: this.boxReviews(id, actor),
     };
+  }
+  boxReviews(id: string, actor: string): BoxReview[] {
+    return this.db
+      .prepare(
+        'SELECT id,run_id,question_id,user_id,verdict,note,created_at FROM box_reviews WHERE run_id=? AND user_id=? ORDER BY rowid',
+      )
+      .all(id, actor)
+      .map((r) => ({
+        id: String(r.id),
+        runId: String(r.run_id),
+        question: String(r.question_id),
+        userId: String(r.user_id),
+        verdict: r.verdict as BoxReview['verdict'],
+        note: String(r.note),
+        createdAt: String(r.created_at),
+      }));
+  }
+  saveBoxReview(id: string, actor: string, input: BoxReviewInput) {
+    this.actor(actor);
+    if (!this.revealed(id, actor))
+      throw new StoreError(403, 'Reveal answers before judging a Box.');
+    if (this.getRun(id).query.questions[input.question]?.type !== 'box')
+      throw new StoreError(400, 'Only Box questions take a verdict.');
+    this.db
+      .prepare('INSERT INTO box_reviews VALUES (?,?,?,?,?,?,?)')
+      .run(
+        randomUUID(),
+        id,
+        input.question,
+        actor,
+        input.verdict,
+        input.note,
+        new Date().toISOString(),
+      );
+    return this.boxReviews(id, actor);
   }
   comparison(id: string, actor: string) {
     this.actor(actor);
