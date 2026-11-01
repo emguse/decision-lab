@@ -9,6 +9,8 @@ import React, {
 import { createRoot } from 'react-dom/client';
 import {
   initialQuery,
+  boxImageProblem,
+  hasBoxQuestion,
   requestSchema,
   type Query,
   type Question,
@@ -89,9 +91,10 @@ function App({
   const modelEditable = selectedConfig?.modelEditable ?? provider === 'jev';
   const canCheck = selectedConfig?.healthCheck ?? false;
   const canRunImages =
-    ['strands', 'llamacpp'].includes(selectedConfig?.adapter ?? '') &&
-    health?.status === 'ready' &&
-    health.vision === true;
+    (provider === 'jev' && selectedConfig?.images === true) ||
+    (['strands', 'llamacpp'].includes(selectedConfig?.adapter ?? '') &&
+      health?.status === 'ready' &&
+      health.vision === true);
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>(
     {},
   );
@@ -185,7 +188,11 @@ function App({
       'Image upload is pending or failed. Wait for the upload, or review and dismiss its error.',
     );
   if (query.imageIds?.length && !canRunImages && selectedConfig?.configured) {
-    if (!['strands', 'llamacpp'].includes(selectedConfig.adapter ?? ''))
+    if (provider === 'jev')
+      runDisabledReasons.push(
+        'Jev image input is experimental and off. Set TYPESAFE_EXPERIMENTAL_IMAGES=true on the server and restart it, select an image-capable Strands or direct llama.cpp connection, or remove the images to run text only.',
+      );
+    else if (!['strands', 'llamacpp'].includes(selectedConfig.adapter ?? ''))
       runDisabledReasons.push(
         'This connection does not accept image attachments. Select an image-capable Strands or direct llama.cpp connection, or remove the images to run text only.',
       );
@@ -215,6 +222,19 @@ function App({
       runDisabledReasons.push(
         'The llama.cpp server did not advertise image input for the selected model. Check that the model supports images and its matching projector is loaded with --mmproj, then use Check connection. Images are retained.',
       );
+  }
+  if (valid.success && hasBoxQuestion(query.questions)) {
+    const problem = boxImageProblem(
+      query.questions,
+      query.imageIds?.length ?? 0,
+    );
+    if (selectedConfig?.box !== true)
+      runDisabledReasons.push(
+        provider === 'jev'
+          ? 'Box questions are experimental and off. Set TYPESAFE_EXPERIMENTAL_IMAGES=true on the server and restart it.'
+          : 'This connection does not support Box questions. Select Jev or remove them.',
+      );
+    else if (problem) runDisabledReasons.push(problem);
   }
   async function refresh() {
     const [r, e, c] = await Promise.all([
@@ -827,10 +847,21 @@ function App({
                     {Boolean(query.imageIds?.length) && !canRunImages && (
                       <p role="status" className="hint">
                         Images are retained. Select a ready image-capable
-                        connection: Strands with --vision or direct llama.cpp
-                        with a compatible model and --mmproj.
+                        connection: Strands with --vision, direct llama.cpp with
+                        a compatible model and --mmproj, or Jev with
+                        TYPESAFE_EXPERIMENTAL_IMAGES=true.
                       </p>
                     )}
+                    {Boolean(query.imageIds?.length) &&
+                      provider === 'jev' &&
+                      canRunImages && (
+                        <p role="status" className="hint">
+                          Experimental: images are sent to the Jev API and
+                          billed as input tokens. Refer to them in questions as{' '}
+                          <code>images[0]</code>, <code>images[1]</code>, and so
+                          on.
+                        </p>
+                      )}
                     {mode === 'json' ? (
                       <>
                         <label>
@@ -917,7 +948,7 @@ function App({
                                     .value as Question['type'];
                                   changeQuestion(
                                     id,
-                                    type === 'noul'
+                                    type === 'noul' || type === 'box'
                                       ? { type, instructions: q.instructions }
                                       : type === 'choice'
                                         ? {
@@ -941,6 +972,9 @@ function App({
                                   Choice · Selection
                                 </option>
                                 <option value="score">Score · Rating</option>
+                                <option value="box">
+                                  Box · Locate (experimental)
+                                </option>
                               </select>
                               <button
                                 aria-label={`Remove question ${id}`}
@@ -965,7 +999,16 @@ function App({
                                 changeQuestion(id, { ...q, instructions })
                               }
                             />
-                            {q.type !== 'noul' && (
+                            {q.type === 'box' && (
+                              <p className="hint">
+                                Describe one target and refer to the image, for
+                                example: the coffee mug in{' '}
+                                <code>images[0]</code>. Jev always returns a
+                                box, so add a Noul question if the target may be
+                                absent.
+                              </p>
+                            )}
+                            {(q.type === 'choice' || q.type === 'score') && (
                               <CriteriaEditor
                                 kind={q.type}
                                 label={`Criteria ${id}`}

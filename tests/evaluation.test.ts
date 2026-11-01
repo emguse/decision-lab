@@ -283,3 +283,114 @@ it('pins the execution actor before awaiting inference and never trusts an unkno
     s.close();
   }
 });
+const boxRun = () => {
+  const query = {
+    model: 'jev-latest',
+    state: 'A desk',
+    questions: {
+      present: { type: 'noul' as const, instructions: 'Is a mug present?' },
+      mug: { type: 'box' as const, instructions: 'the mug in `images[0]`' },
+    },
+  };
+  return {
+    title: 'Box',
+    query,
+    response: validateResponse(
+      {
+        model: 'jev-1.14.0',
+        answers: {
+          present: { type: 'noul', noul: 0.9 },
+          mug: {
+            type: 'box',
+            box: { top: 0.1, bottom: 0.5, left: 0.1, right: 0.5 },
+            confidence: null,
+          },
+        },
+        usage: {},
+      },
+      query,
+    ),
+    createdAt: new Date().toISOString(),
+    elapsedMs: 1,
+  };
+};
+it('excludes Box from labels and grading but keeps other questions graded', () => {
+  const saved = { ...boxRun(), id: 'box' };
+  expect(() => validateLabels(saved.query, { mug: 'correct' })).toThrow(
+    'Box questions take no labels',
+  );
+  expect(() =>
+    validateLabels(saved.query, { present: true }, true),
+  ).not.toThrow();
+  const graded = grade(saved, { present: true }, emptyDraft().settings);
+  expect(graded.rows.map((r) => r.id)).toEqual(['present']);
+  expect(graded.allPass).toBe(true);
+});
+it('records Box verdicts only after reveal, per evaluator, as an append-only history', () => {
+  const store = new Store(':memory:');
+  try {
+    const first = store.actor();
+    const second = store.addUser('Second').id;
+    const saved = store.saveRun(boxRun(), first, true);
+    const input = { question: 'mug', verdict: 'correct' as const, note: '' };
+    expect(() => store.saveBoxReview(saved.id, first, input)).toThrow(
+      'Reveal answers',
+    );
+    const blind = JSON.stringify(store.labeling(saved.id, first));
+    expect(blind).not.toContain('confidence');
+    expect(blind).not.toContain('boxReviews');
+    const finalized = store.finalize(saved.id, first, {
+      ...emptyDraft(),
+      labels: { present: true },
+    });
+    expect(finalized.boxReviews).toEqual([]);
+    expect(() =>
+      store.saveBoxReview(saved.id, first, { ...input, question: 'present' }),
+    ).toThrow('Only Box');
+    store.saveBoxReview(saved.id, first, input);
+    const history = store.saveBoxReview(saved.id, first, {
+      ...input,
+      verdict: 'incorrect',
+      note: 'Too wide',
+    });
+    expect(history.map((r) => r.verdict)).toEqual(['correct', 'incorrect']);
+    expect(store.evaluation(saved.id, first).boxReviews).toHaveLength(2);
+    expect(store.evaluation(saved.id, first).revisions.at(-1)?.exposure).toBe(
+      'blind',
+    );
+    store.reveal(saved.id, second);
+    expect(store.evaluation(saved.id, second).boxReviews).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
+it('migrates schema 6 to add Box verdicts with a backup and preserves runs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jev-box-migrate-'));
+  const path = join(dir, 'db.sqlite');
+  try {
+    const store = await Store.open(path);
+    const saved = store.saveRun(run, store.actor(), false);
+    store.close();
+    const db = new DatabaseSync(path);
+    const body = db.prepare('SELECT body FROM runs').get()!.body;
+    db.exec('DROP TABLE box_reviews; PRAGMA user_version=6;');
+    db.close();
+    const upgraded = await Store.open(path);
+    expect(upgraded.getRun(saved.id).title).toBe('Blind test');
+    expect(upgraded.boxReviews(saved.id, upgraded.actor())).toEqual([]);
+    upgraded.close();
+    const inspect = new DatabaseSync(path);
+    expect(inspect.prepare('SELECT body FROM runs').get()!.body).toBe(body);
+    expect(inspect.prepare('PRAGMA user_version').get()!.user_version).toBe(7);
+    inspect.close();
+    const backup =
+      readdirSync(dir).find((p) => p.includes('schema-6')) ??
+      readdirSync(dir).find((p) => p.includes('backup'));
+    expect(backup).toBeDefined();
+    const restored = new DatabaseSync(join(dir, backup!));
+    expect(restored.prepare('PRAGMA user_version').get()!.user_version).toBe(6);
+    restored.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

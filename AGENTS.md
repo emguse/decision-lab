@@ -19,6 +19,7 @@ Use Node.js 22.16+ and npm; commit `package-lock.json` when dependencies change.
 - `npm run test:local`: verify and save a local run through the running Hono app; Python must already be prepared.
 - `npm run test:images:local -- /absolute/path/to/image.png`: verify saved image and text runs through Hono; the separately prepared Strands or direct llama.cpp server must report `vision: true`. Set `DECISION_TEST_CONNECTION_ID` to select a connection.
 - `npm run test:live`: make one paid Jev request and save the result.
+- `npm run test:images:live -- /absolute/path/to/image.png`: make one paid experimental Jev image and Box request and save the result.
 
 ## Coding Style & Naming Conventions
 
@@ -44,4 +45,4 @@ Accept only configured loopback HTTP origins for local inference; refuse redirec
 
 Original application code is MIT-licensed. Preserve third-party notices and update `THIRD_PARTY_NOTICES.md` and retained license texts when production dependencies change. Model/runtime licenses are separate from the application license.
 
-Store original images as deduplicated SQLite BLOBs and keep ordered IDs in application Queries. Strands and fixed-model direct llama.cpp adapters accept image inference; require model match and explicit health `vision: true`. For llama.cpp, require `image` input and `decisions` output; reject router image execution. Never omit images silently or send application image IDs upstream. Image-bearing records use format 2; retain format 1 and immutable migration history. Image display must not reveal predictions or change evaluator exposure.
+Store original images as deduplicated SQLite BLOBs and keep ordered IDs in application Queries. Strands and fixed-model direct llama.cpp adapters accept image inference; require model match and explicit health `vision: true`. For llama.cpp, require `image` input and `decisions` output; reject router image execution. Jev accepts images and Box questions only with `TYPESAFE_EXPERIMENTAL_IMAGES=true`; send its `TypeSafe-Danger-Zone-Images` header only on those requests and keep text-only requests unchanged. Box runs require exactly one image and only Jev accepts them. Box verdicts are recorded after reveal in `box_reviews`, never in blind labels; Flows reject Box. Never omit images silently or send application image IDs upstream. Image-bearing records use format 2; retain format 1 and immutable migration history. Image display must not reveal predictions or change evaluator exposure.

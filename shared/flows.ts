@@ -6,7 +6,12 @@ import {
   validateLabels,
   grade,
 } from './evaluation.js';
-import { requestSchema, responseSchema, type Run } from './schema.js';
+import {
+  hasBoxQuestion,
+  requestSchema,
+  responseSchema,
+  type Run,
+} from './schema.js';
 import { executionMetadataSchema, providerIdSchema } from './providers.js';
 
 const id = z
@@ -283,6 +288,8 @@ export function validateFlow(
       definition.version !== node.definition.version
     )
       throw new Error(`Missing definition for ${node.id}.`);
+    if (hasBoxQuestion(definition.questions))
+      throw new Error(`Flows do not support Box questions (${node.id}).`);
     for (const branch of node.branches)
       for (const condition of branch.conditions) {
         const q = definition.questions[condition.question];
@@ -346,7 +353,7 @@ export function matches(
       ? a.type === 'noul'
         ? a.noul
         : NaN
-      : a.type === 'noul'
+      : a.type === 'noul' || a.type === 'box'
         ? NaN
         : a.confidence;
   return condition.operator === 'gte'

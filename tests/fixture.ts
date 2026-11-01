@@ -22,4 +22,4 @@ export const fixture = {
 };
 
 export const DROP_FLOW_TABLES =
-  'DROP TABLE flow_expected_exposures; DROP TABLE flow_raw_responses; DROP TABLE flow_exposures; DROP TABLE flow_assignments; DROP TABLE flow_revisions; DROP TABLE flow_images; DROP TABLE flow_executions; DROP TABLE flow_document_images; DROP TABLE flow_documents; DROP TABLE suite_images; ';
+  'DROP TABLE box_reviews; DROP TABLE flow_expected_exposures; DROP TABLE flow_raw_responses; DROP TABLE flow_exposures; DROP TABLE flow_assignments; DROP TABLE flow_revisions; DROP TABLE flow_images; DROP TABLE flow_executions; DROP TABLE flow_document_images; DROP TABLE flow_documents; DROP TABLE suite_images; ';

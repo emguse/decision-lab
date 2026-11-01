@@ -10,7 +10,9 @@ const connections = loadConnections().map((c) => createConnectionProvider(c));
 const store = await Store.open(process.env.DATABASE_PATH || 'data/jev.sqlite');
 const app = createApp(
   store,
-  new JevProvider(process.env.TYPESAFE_API_KEY),
+  new JevProvider(process.env.TYPESAFE_API_KEY, fetch, 60000, {
+    experimentalImages: process.env.TYPESAFE_EXPERIMENTAL_IMAGES === 'true',
+  }),
   Boolean(process.env.TYPESAFE_API_KEY),
   connections,
 );

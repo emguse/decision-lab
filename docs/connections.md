@@ -207,6 +207,10 @@ while the model was loading; the connection timeout was increased to 300000 ms.
 This confirms basic operation for that setup, not Japanese accuracy, a latency
 benchmark, memory consumption, or overflow behavior.
 
+## Jev images and Box
+
+The built-in Jev provider accepts images and Box questions only after opting in. See [Operations](operations.md#experimental-jev-images-and-box). Box is refused on `strands`, `llamacpp` and `systemone` connections.
+
 ## Strands image inference
 
 Images require the Qwen3.5-based `StrandsAgents/strands-decider-2B-qwen3.5-v1-2610` model and a runtime with the vision path. The inspected source revision is `0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534`; its [vision contract](https://github.com/strands-labs/strands-decider/blob/0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534/docs/vision.md) and [server](https://github.com/strands-labs/strands-decider/blob/0ac22a97e584f3ccf87cc9b8cc5fdbad57cdf534/src/strands_decider/server.py) report `vision` in health and accept a top-level Base64 `images` array. The user confirmed image execution and result display with this source pin on 2026-10-11. This confirmation does not establish general model accuracy or measured runtime performance.

@@ -894,6 +894,40 @@ footer .footer-link {
 .image-preview small {
   display: block;
 }
+.image-preview.boxed {
+  width: 100%;
+  max-width: 480px;
+}
+.box-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+.image-preview .box-frame img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0;
+  image-orientation: none;
+}
+.box-overlay {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #e5484d;
+  pointer-events: none;
+}
+.box-overlay span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 4px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.2;
+}
 .image-actions {
   display: flex;
   gap: 4px;

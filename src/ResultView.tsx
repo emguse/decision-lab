@@ -1,10 +1,15 @@
 import { ImageGallery } from './Images';
-import type { Run } from '../shared/schema';
+import type { BoundingBox, Run } from '../shared/schema';
 const pretty = (v: unknown) => JSON.stringify(v, null, 2);
+export function answerBoxes(run: Run) {
+  return Object.entries(run.response.answers).flatMap(([id, a]) =>
+    a.type === 'box' ? [{ id, box: a.box as BoundingBox }] : [],
+  );
+}
 export function ResultView({ result }: { result: Run }) {
   return (
     <>
-      <ImageGallery ids={result.query.imageIds} />
+      <ImageGallery ids={result.query.imageIds} boxes={answerBoxes(result)} />
       <div className="metrics">
         <div>
           <small>
@@ -39,46 +44,63 @@ export function ResultView({ result }: { result: Run }) {
         Saved run · {result.title} ·{' '}
         {new Date(result.createdAt).toLocaleString('en-US')}
       </p>
-      {Object.entries(result.response.answers).map(([id, a]) => (
-        <article className="answer" key={id}>
-          <div className="answer-heading">
-            <h3>{id}</h3>
-            <span className="badge">{a.type}</span>
-          </div>
-          <div className="verdict">
-            {a.type === 'noul'
-              ? `P(Yes) ${(a.noul * 100).toFixed(1)}%`
-              : a.type === 'choice'
-                ? a.choice
-                : a.score.toFixed(3)}
-          </div>
-          {a.type !== 'noul' && (
-            <p className="muted">
-              Confidence {a.confidence.toFixed(3)} · Distribution concentration
-              (not accuracy)
-            </p>
-          )}
-          {Object.entries(
-            a.type === 'noul'
-              ? { Yes: a.noul, No: 1 - a.noul }
-              : a.probabilities,
-          ).map(([key, p]) => (
-            <div className="probability" key={key}>
-              <div>
-                <span>
-                  {a.type === 'score'
-                    ? `${key} · ${typeof a.legend[key] === 'string' ? a.legend[key] : JSON.stringify(a.legend[key])}`
-                    : key}
-                </span>
-                <strong>{(p * 100).toFixed(1)}%</strong>
-              </div>
-              <div className="track">
-                <div style={{ width: `${p * 100}%` }} />
-              </div>
+      {Object.entries(result.response.answers).map(([id, a]) =>
+        a.type === 'box' ? (
+          <article className="answer" key={id}>
+            <div className="answer-heading">
+              <h3>{id}</h3>
+              <span className="badge">box</span>
             </div>
-          ))}
-        </article>
-      ))}
+            <div className="verdict">
+              Top {a.box.top.toFixed(3)} · Bottom {a.box.bottom.toFixed(3)} ·
+              Left {a.box.left.toFixed(3)} · Right {a.box.right.toFixed(3)}
+            </div>
+            <p className="muted">
+              Confidence {a.confidence?.toFixed(3) ?? '—'} · Not a probability.
+              Jev always returns a box, even if the target is absent.
+            </p>
+          </article>
+        ) : (
+          <article className="answer" key={id}>
+            <div className="answer-heading">
+              <h3>{id}</h3>
+              <span className="badge">{a.type}</span>
+            </div>
+            <div className="verdict">
+              {a.type === 'noul'
+                ? `P(Yes) ${(a.noul * 100).toFixed(1)}%`
+                : a.type === 'choice'
+                  ? a.choice
+                  : a.score.toFixed(3)}
+            </div>
+            {a.type !== 'noul' && (
+              <p className="muted">
+                Confidence {a.confidence.toFixed(3)} · Distribution
+                concentration (not accuracy)
+              </p>
+            )}
+            {Object.entries(
+              a.type === 'noul'
+                ? { Yes: a.noul, No: 1 - a.noul }
+                : a.probabilities,
+            ).map(([key, p]) => (
+              <div className="probability" key={key}>
+                <div>
+                  <span>
+                    {a.type === 'score'
+                      ? `${key} · ${typeof a.legend[key] === 'string' ? a.legend[key] : JSON.stringify(a.legend[key])}`
+                      : key}
+                  </span>
+                  <strong>{(p * 100).toFixed(1)}%</strong>
+                </div>
+                <div className="track">
+                  <div style={{ width: `${p * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </article>
+        ),
+      )}
       <details className="raw">
         <summary>Raw response</summary>
         <pre>{pretty(result.rawResponse ?? result.response)}</pre>

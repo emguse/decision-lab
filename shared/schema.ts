@@ -30,6 +30,7 @@ export const questionSchema = z.discriminatedUnion('type', [
     ...common,
     criteria: z.array(content).min(2).max(10),
   }),
+  z.object({ type: z.literal('box'), ...common }).strict(),
 ]);
 export const requestSchema = z
   .object({
@@ -44,6 +45,8 @@ export const requestSchema = z
 export type Query = z.infer<typeof requestSchema>;
 export interface DecisionImage {
   mime: string;
+  width: number;
+  height: number;
   data: Uint8Array;
 }
 export type DecisionInput = Omit<Query, 'imageIds'> & {
@@ -59,6 +62,18 @@ const probabilities = z
       Math.abs(Object.values(v).reduce((a, b) => a + b, 0) - 1) <= 0.03,
     'Invalid probability distribution',
   );
+const boxSchema = z
+  .object({
+    top: probability,
+    bottom: probability,
+    left: probability,
+    right: probability,
+  })
+  .refine(
+    (v) => v.left < v.right && v.top < v.bottom,
+    'Box edges must be ordered',
+  );
+export type BoundingBox = z.infer<typeof boxSchema>;
 export const responseSchema = z
   .object({
     model: z.string(),
@@ -81,6 +96,13 @@ export const responseSchema = z
             confidence: probability,
             probabilities,
             legend: z.record(z.string(), content),
+          })
+          .passthrough(),
+        z
+          .object({
+            type: z.literal('box'),
+            box: boxSchema,
+            confidence: probability.nullable(),
           })
           .passthrough(),
       ]),
@@ -134,7 +156,8 @@ export function validateResponse(raw: unknown, query: Query): DecisionResponse {
   for (const [id, q] of Object.entries(query.questions)) {
     const a = result.answers[id];
     if (!a || a.type !== q.type) throw new Error('Answer type mismatch');
-    if (a.type !== 'noul' && q.type !== 'noul') {
+    if (a.type === 'noul' || a.type === 'box') continue;
+    if (q.type !== 'noul' && q.type !== 'box') {
       const expected =
         q.type === 'choice'
           ? Object.keys(q.criteria)
@@ -156,4 +179,16 @@ export function validateResponse(raw: unknown, query: Query): DecisionResponse {
     }
   }
   return result;
+}
+export function hasBoxQuestion(questions: Query['questions']) {
+  return Object.values(questions).some((q) => q.type === 'box');
+}
+/** A Box answer does not name its image, so an overlay needs exactly one. */
+export function boxImageProblem(
+  questions: Query['questions'],
+  imageCount: number,
+) {
+  return hasBoxQuestion(questions) && imageCount !== 1
+    ? 'Box questions require exactly one attached image.'
+    : null;
 }

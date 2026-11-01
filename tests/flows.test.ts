@@ -77,6 +77,18 @@ const definitionMap = {
 describe('flow validation and routing', () => {
   it('rejects cycles, unreachable cards, missing targets, definitions and invalid conditions', () => {
     expect(() => validateFlow(exampleFlow, definitionMap)).not.toThrow();
+    expect(() =>
+      validateFlow(exampleFlow, {
+        ...definitionMap,
+        triage: {
+          ...exampleFlowDefinition,
+          questions: {
+            ...exampleFlowDefinition.questions,
+            where: { type: 'box', instructions: 'the target in `images[0]`' },
+          },
+        },
+      }),
+    ).toThrow('Flows do not support Box');
     const mutate = (fn: (f: Flow) => void) => {
       const f = structuredClone(exampleFlow);
       fn(f);

@@ -22,6 +22,7 @@ export async function mockApi(
     localId?: string;
     localFailure?: boolean;
     jevConfigured?: boolean;
+    jevImages?: boolean;
   } = {},
 ) {
   const store = new Store(':memory:');
@@ -61,8 +62,26 @@ export async function mockApi(
   const app = createApp(
     store,
     {
-      evaluate: async () => {
+      ...(options.jevImages
+        ? { capabilities: { images: true, box: true } }
+        : {}),
+      evaluate: async (query) => {
         calls++;
+        if (options.jevImages)
+          return validateResponse(
+            {
+              ...fixture,
+              answers: {
+                ...fixture.answers,
+                is_urgent: {
+                  type: 'box',
+                  box: { top: 0.25, bottom: 0.75, left: 0.1, right: 0.6 },
+                  confidence: null,
+                },
+              },
+            },
+            query,
+          );
         if (options.delay)
           await new Promise((r) => setTimeout(r, options.delay));
         if (options.failure)
